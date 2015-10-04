@@ -1,0 +1,540 @@
+#!/bin/sh
+############################################################ IDENT(1)
+#
+# $Title: unfurl -- FreeBSD dpv(1) wrapper to unpack archive files visually $
+#
+############################################################ GLOBALS
+
+#
+# Program name
+#
+pgm="${0##*/}"
+export pgm
+
+#
+# Program version
+#
+VERSION="1.0"
+
+#
+# Global exit status
+#
+SUCCESS=0
+FAILURE=1
+export SUCCESS FAILURE
+
+#
+# Command-line options
+#
+DEBUG=0
+DRYRUN=
+FORCE=
+UNLINK=
+USE_DIALOG=
+USE_XDIALOG=
+USE_ZENITY=
+VERBOSE=0
+export DEBUG DRYRUN FORCE UNLINK USE_DIALOG USE_XDIALOG USE_ZENITY
+
+#
+# Miscellaneous
+#
+DPV_PREFIX='Unpacking $N files:\n'
+DPV_APPEND='\nTotal Progress:'
+HUMAN_DELAY=0.05	# Time to give human to read things
+ZENITY_FONT="DejaVu Sans Mono"
+export HUMAN_DELAY
+
+############################################################ FUNCTIONS
+
+version()
+{
+	local author='$Author: dteske $' date='$Date: 2015/08/26 $'
+	author="${author#*: }" date="${date#*: }"
+	author="${author% $}" date="${date% $}"
+	printf "%s %s (%s; %s\n" "$pgm" "$VERSION" "$author" "$date" >&2
+	exit $FAILURE
+}
+
+usage()
+{
+	local optfmt="\t%-8s %s\n"
+	exec >&2
+	printf "Usage: %s [-dDfhnUVXZ] [-s sec] files ...\n" "$pgm"
+	printf "OPTIONS:\n"
+	printf "$optfmt" "-d" \
+		"Debug. Can be specified multiple times (up to 2)."
+	printf "$optfmt" "-D" \
+		"Use dialog(1) or \$DIALOG instead of dialog(3)."
+	printf "$optfmt" "-f" \
+		"Force. Don't skip when destination already exists."
+	printf "$optfmt" "-h" \
+		"Help. Print this usage satement to stderr and exit."
+	printf "$optfmt" "-n" \
+		"Dry run. Don't actually unpack any files."
+	printf "$optfmt" "-s sec" \
+		"Seconds to sleep between unpacking each item (default 0.05)."
+	printf "$optfmt" "-U" \
+		"Unlink destination file/directory before creation."
+	printf "$optfmt" "-v" \
+		"Verbose. Can be specified multiple times (up to 3)."
+	printf "$optfmt" "-V" \
+		"Version. Print version information to stderr and exit."
+	printf "$optfmt" "-X" \
+		"Use Xdialog(1) instead of dialog(3)."
+	printf "$optfmt" "-Z" \
+		"Use zenity(1) instead of dialog(3)."
+	exit $FAILURE
+}
+
+replace()
+{
+	local __string= __found=
+
+	local OPTIND=1 OPTARG __flag __all=
+	while getopts a __flag; do
+		case "$__flag" in
+		a) __all=1 ;;
+		esac
+	done
+	shift $(( $OPTIND - 1 ))
+
+	local __find="$1" __start="$2" __sub="$3" __var_to_set="$4"
+	while [ "$__start" ]; do
+		case "$__start" in *"$__find"*)
+			__found=1
+			__string="$__string${__start%%"$__find"*}$__sub"
+			__start="${__start#*"$__find"}"
+			[ "$__all" ] || break
+			continue
+		esac
+		break
+	done
+	__string="$__string$__start"
+
+	if [ "$__var_to_set" ]; then
+		eval $__var_to_set=\"\$__string\"
+	else
+		echo "$__string"
+	fi
+
+	[ "$__found" ] # return status
+}
+
+escape()
+{
+	local __string="$1" __var_to_set="$2"
+	replace -a "'" "$__string" "'\\''" "$__var_to_set"
+}
+
+dumpvars()
+{
+	local var value dump=raw retval=$SUCCESS
+	while [ $# -gt 0 ]; do
+		var="$1" shift
+		case "$var" in -doc|-raw|-str)
+			dump=$var continue ;;
+		esac
+		eval value=\"\$$var\" || retval=$? continue
+		case "$dump" in
+		-raw)
+			printf "export %s=%s\n" "$var" "$value" ;;
+		-str)
+			escape "$value" value
+			printf "export %s='%s'\n" "$var" "$value" ;;
+		-doc)
+			printf "# START %s\n" "$var"
+			printf "exec 9<<'EOF'\n%s\nEOF\n" "$value"
+			printf 'export %s="$( cat <&9 )"\n' "$var"
+			;;
+		esac
+	done
+	return $retval
+}
+
+############################################################ EXPORTED FUNCTIONS
+
+zdialog_gauge_awk='
+	!dump && /^[[:digit:]]+$/
+	/^XXX$/ && dump = !dump {
+		sub(/\n$/, "", buf)
+		gsub(/\\/, "&&", buf)
+		gsub(/\n\n/, "\n", buf)
+		gsub(/\n/, "\\n", buf)
+		if (buf) {
+			printf "# %s\n", buf
+			fflush()
+			buf = ""
+		}
+		next
+	}
+	dump { buf = sprintf("%s\n%s\n", buf, $0) }
+' # END-QUOTE
+zdialog_gauge_function='
+zdialog_gauge()
+{
+	exec 9<<-EOF
+	<?xml version="1.0"?>
+	<!DOCTYPE fontconfig SYSTEM "fonts.dtd">
+	<fontconfig>
+		<dir>/usr/local/share/fonts</dir>
+		<dir>/usr/local/lib/X11/fonts</dir>
+		<cachedir>/var/db/fontconfig</cachedir>
+		<match target="pattern">
+			<edit name="family" mode="assign" binding="same">
+				<string>$ZENITY_FONT</string>
+			</edit>
+		</match>
+	</fontconfig>
+	EOF
+	if [ $VERBOSE -ge 2 ]; then
+		awk "$zdialog_gauge_awk"
+	else
+		awk "$zdialog_gauge_awk" |
+			FONTCONFIG_FILE=/dev/fd/2 2<&9 zenity --progress \
+			--width 400 --auto-close --auto-kill --text "" "$@"
+	fi
+}
+' # END-QUOTE
+eval "$zdialog_gauge_function"
+
+############################################################ MAIN
+
+#
+# Process command-line options
+#
+while getopts dDfhns:UvVXZ flag; do
+	case "$flag" in
+	d) DEBUG=$(( $DEBUG + 1 )) ;;
+	D) USE_DIALOG=1 ;;
+	f) FORCE=1 ;;
+	h) usage ;; # NOTREACHED
+	n) DRYRUN=1 ;;
+	s) HUMAN_DELAY="$OPTARG" ;;
+	U) UNLINK=1 ;;
+	v) VERBOSE=$(( $VERBOSE + 1 )) ;;
+	V) version ;; # NOTREACHED
+	X) USE_XDIALOG=1 ;;
+	Z) USE_ZENITY=1 ;;
+	*) usage # NOTREACHED
+	esac
+done
+shift $(( $OPTIND - 1 ))
+
+#
+# Validate number of arguments
+#
+if [ $# -lt 1 ]; then
+	echo "$pgm: No file arguments provided" >&2
+	usage # NOTREACHED
+fi
+
+#
+# When given `-d', build a script that can be run later
+#
+[ $DEBUG -ge 1 ] && echo "#!/bin/sh"
+
+#
+# Build dpv(1) argument list
+#
+N=1 DPV_ARG_LIST=
+for arg in "$@"; do
+	[ -e "$arg" -a ! -d "$arg" ] || continue
+	ftype=$( file -b "$arg" 2> /dev/null ) || continue
+	arg_type=unknown arg_dest="$arg.unfurled"
+	case "$ftype" in
+	"POSIX tar archive"*)
+		arg_type=tar
+		[ "$arg" != "${arg%.[Tt][Aa][Rr]}" ] && arg_dest="${arg%.???}"
+		;;
+	"bzip2 compressed data"*)
+		arg_type=bzip2
+		case "$arg" in
+		*.[Tt][Aa][Rr].[Bb][Zz])
+			arg_type="tar/$arg_type" arg_dest="${arg%.???.??}" ;;
+		*.[Tt][Aa][Rr].[Bb][Zz]2)
+			arg_type="tar/$arg_type" arg_dest="${arg%.???.???}" ;;
+		*.[Tt][Bb][Zz])
+			arg_type="tar/$arg_type" arg_dest="${arg%.???}" ;;
+		*.[Bb][Zz])
+			arg_dest="${arg%.??}" ;;
+		*.[Bb][Zz]2)
+			arg_dest="${arg%.???}" ;;
+		esac
+		;;
+	"gzip compressed data"*)
+		arg_type=gzip
+		case "$arg" in
+		*.[Tt][Aa][Rr].[Gg][Zz])
+			arg_type="tar/$arg_type" arg_dest="${arg%.???.??}" ;;
+		*.[Tt][Gg][Zz])
+			arg_type="tar/$arg_type" arg_dest="${arg%.???}" ;;
+		*.[Gg][Zz])
+			arg_dest="${arg%.??}" ;;
+		esac
+		;;
+	"XZ compressed data"*)
+		arg_type=xz
+		case "$arg" in
+		*.[Tt][Aa][Rr].[Xx][Zz])
+			arg_type="tar/$arg_type" arg_dest="${arg%.???.??}" ;;
+		*.[Tt][Xx][Zz])
+			arg_type="tar/$arg_type" arg_dest="${arg%.???}" ;;
+		*.[Xx][Zz])
+			arg_dest="${arg%.??}" ;;
+		esac
+		;;
+	*"ISO 9660 CD-ROM filesystem data"*)
+		arg_type=iso
+		case "$arg" in
+		*.[Ii][Ss][Oo])
+			arg_dest="${arg%.???}" ;;
+		esac
+		;;
+	*) # Ignore any other [unknown] file types
+		continue
+	esac
+
+	export FILE_TYPE_$N="$arg_type"
+	export FILE_DEST_$N="$arg_dest"
+	if [ $DEBUG -ge 1 ]; then
+		echo "#################### $N $arg"
+		dumpvars -raw FILE_TYPE_$N -str FILE_DEST_$N
+	fi
+
+	escape "$arg" arg
+	fsize=
+	[ $VERBOSE -eq 0 -o $VERBOSE -eq 2 ] &&
+		fsize=$( stat -f%z "$arg" 2> /dev/null )
+	DPV_ARG_LIST="$DPV_ARG_LIST
+		'${fsize:--1}:$N ${arg##*/}' '$arg'" # END-QUOTE
+	N=$(( $N + 1 ))
+done
+N=$(( $N - 1 ))
+[ $DEBUG -ge 1 ] && echo "########################################"
+
+# Validate we had at least one non-null, non-directory argument to work with
+if [ $N -eq 0 ]; then
+	echo "$pgm: No file arguments provided" >&2
+	usage # NOTREACHED
+fi
+
+#
+# awk(1) command for compressing multi-line awk(1)/sh(1) code into a single-
+# line command (e.g., so the command can fit into cmdbuf[4096] of dpv(1)'s
+# shell_spawn_pipecmd()).
+#
+exec 9<<'EOF_CMD_COMPRESSOR'
+	!/^[[:space:]]*(#|$)/ {
+		if (match($0, /[^\\]#.*/))
+			$0 = substr($0, 0, RSTART)
+		gsub(/\\#/, "#")
+		gsub(/\t/, DEBUG > 1 ? "    " : " ")
+		if (DEBUG <= 1) sub(/\\$/, "")
+		if ($0 ~ /(EOF|%s)/) sub(/^[[:space:]]*/, "")
+		printf "%s" (DEBUG > 1 || $0 ~ /(EOF|%s)/ ? "\n" : ""), $0
+	} END { if (DEBUG < 2) printf "\n" }
+EOF_CMD_COMPRESSOR
+CMD_COMPRESSOR_AWK=$( cat <&9 )
+
+#
+# Decoder shell command (given to dpv(1)) for processing output data
+#
+# NB: For dpv(1) to replace `%s' with the current item's label text, the
+#     `-x cmd' argument must pass fmtcheck(3), requiring printf(3) syntax.
+# NB: Newlines are removed (so make sure semi-colons are used appropriately)
+# NB: Tabs replaced with 1 or 4 spaces (prevents shell interpretation of tab)
+# NB: Literal pound signs must be escaped with a backslash (e.g., `\#')
+#
+exec 9<<'EOF_SH_DECODER'
+
+	################################################## PARENT GLOBALS
+	#
+	# Required globals exported from from parent namespace:
+	#
+	#  pgm		Program basename for parent script
+	#  SUCCESS	Shell exit status; numeric value zero (0)
+	#  FAILURE	Shell exit status; numeric value zero (1)
+	#  DEBUG	Level of debugging requested (0 up to 3)
+	#  DRYRUN	1 if we should do nothing, NULL otherwise
+	#  FILE_DEST_$N	Destination path for output of current item
+	#  FILE_TYPE_$N	Information about file type for current item
+	#  FORCE	1 to proceed if destination exists, NULL otherwise
+	#  HUMAN_DELAY	Number of seconds to sleep between iterations
+	#  UNLINK	1 to unlink destination before creation, NULL otherwise
+	#  USE_DIALOG	1 if using dialog(1) vs dialog(3), NULL otherwise
+	#  USE_XDIALOG	1 if using Xdialog(1) vs dialog(3), NULL otherwise
+	#  USE_ZENITY	1 if using zenity(1) vs dialog(3), NULL otherwise
+	#
+	# Where $N is the current item number, provided by dpv(1) [below].
+	#
+	################################################## DPV(1) DATA
+
+	#
+	# dpv(1) replaces first occurrence of percent-s with the current label
+	# NB: Label formatted as [percent-u space percent-s], item_no, label
+	# NB: Label formatting is done by this script further below
+	# NB: CMD_COMPRESSOR_AWK knows to retain newlines for below 3 lines
+	#
+	read N LABEL_REST <<-EOF_DPV_LABEL
+	%s
+	EOF_DPV_LABEL
+
+	################################################## MAIN
+
+	# NB: sleep(1) gives zenity time to initialize display
+	[ "$USE_ZENITY" -o "$USE_XDIALOG" ] && [ "$N" = "1" ] && sleep 1;
+
+	if [ $DEBUG -ge 2 ]; then
+		echo -n "\#\#\#\#\#\#\#\#\#\# " >> "$pgm.debug";
+		echo -n "Reading data from dpv(1)" >> "$pgm.debug";
+		echo " @ $( date )" >> "$pgm.debug";
+		echo "N=[$N] LABEL_REST=[$LABEL_REST]" >> "$pgm.debug";
+	fi;
+
+	[ "$DRYRUN" ] && trap '
+		if [ $DEBUG -ge 2 ]; then
+			cat > /dev/null 2>> "$pgm.debug";
+		else
+			cat > /dev/null;
+		fi;
+	' EXIT;
+
+	# Exit if we read a non-number for N (current item number)
+	# NB: This is the first word of the dpv(1) label for current item
+	if ! [ "${N:-x}" = "${N\#*[!0-9]}" ]; then
+		[ $DEBUG -ge 2 ] && echo ERROR: \
+			"Bad item number from dpv(1) label" >> "$pgm.debug";
+		exit $FAILURE;
+	fi;
+
+	# Use N to get item-specific information from environment
+	eval ftype=\"\$FILE_TYPE_$N\" dest=\"\$FILE_DEST_$N\";
+	[ $DEBUG -ge 2 ] &&
+		echo "ftype=[$ftype] dest=[$dest]" >> "$pgm.debug";
+
+	# Exit if we don't have a destination path
+	if [ ! "$dest" ]; then
+		[ $DEBUG -ge 2 ] && echo ERROR: \
+			"No destination path for item $N" >> "$pgm.debug";
+		exit $FAILURE;
+	fi;
+
+	# Don't overwrite anything, unless force (-f) or unlink (-U) given
+	if [ -e "$arg_dest" -a ! "$FORCE" -a ! "$UNLINK" ]; then
+		[ $DEBUG -ge 2 ] && echo ERROR: \
+			"Destination already exists" >> "$pgm.debug";
+		exit $FAILURE;
+	fi;
+
+	# Sleep before reading any data to give feedback we're alive
+	[ "$HUMAN_DELAY" -a "$HUMAN_DELAY" != "0" ] && sleep "$HUMAN_DELAY";
+
+	# Unlink the destination if desired; Note the lack of '-Rf' for safety
+	if [ "$UNLINK" -a ! "$DRYRUN" ]; then
+		if [ $DEBUG -ge 2 ]; then
+			rm -f "$dest" >> "$pgm.debug" 2>&1;
+		else
+			rm -f "$dest";
+		fi;
+	fi;
+
+	# Make destination directory for certain output types
+	case "$ftype" in
+	tar|tar/*|iso)
+		if [ ! -d "$dest" -a ! "$DRYRUN" ]; then
+			if [ $DEBUG -ge 2 ]; then
+				mkdir -p "$dest" >> "$pgm.debug" 2>&1 ||
+					exit $FAILURE;
+			else
+				mkdir -p "$dest" || exit $FAILURE;
+			fi;
+		fi
+		;;
+	esac;
+
+	#
+	# Based on the target file type, determine the proper decoder
+	#
+	cmd= ;
+	case "$ftype" in
+	bzip2)     cmd='bzcat > "$dest"' ;;
+	gzip)      cmd='zcat > "$dest"' ;;
+	iso)       cmd='tar xf - -C "$dest"' ;;
+	tar)       cmd='tar xf - -C "$dest"' ;;
+	tar/bzip2) cmd='tar jxf - -C "$dest"' ;;
+	tar/gzip)  cmd='tar zxf - -C "$dest"' ;;
+	tar/xz)    cmd='tar Jxf - -C "$dest"' ;;
+	xz)        cmd='xzcat > "$dest"' ;;
+	*)
+		[ $DEBUG -ge 2 ] && echo "Unknown file type [$ftype]" \
+			"(item $N)" >> "$pgm.debug";
+		exit $FAILURE;
+	esac;
+
+	#
+	# Run decoder
+	# NB: Provides exit status
+	#
+	if [ $DEBUG -ge 2 ]; then
+		echo "$cmd" >> "$pgm.debug";
+		[ "$DRYRUN" ] || eval "$cmd" >> "$pgm.debug" 2>&1;
+	else
+		[ "$DRYRUN" ] || eval "$cmd";
+	fi;
+	retval=$?;
+	[ $DEBUG -ge 2 ] && echo "Exit status:" \
+		"$retval${DRYRUN:+ (dryrun)}" >> "$pgm.debug";
+	exit $retval;
+
+EOF_SH_DECODER
+SH_DECODER_CMD=$( awk -v DEBUG=$DEBUG "$CMD_COMPRESSOR_AWK" <&9 )
+
+#
+# Handle mutually exclusive options
+#
+dpv_mode=-m
+if [ "$USE_ZENITY" ]; then
+	dpv_mode="${dpv_mode:--}d"
+	export USE_COLOR=
+elif [ "$USE_XDIALOG" ]; then
+	dpv_mode="${dpv_mode:--}X"
+elif [ "$USE_DIALOG" ]; then
+	dpv_mode="${dpv_mode:--}D"
+fi
+[ $VERBOSE -ge 2 ] && dpv_mode="${dpv_mode:--}d"
+
+#
+# Handle debugging
+#
+if [ $DEBUG -ge 1 ]; then
+	dumpvars -str pgm
+	[ $DEBUG -ge 2 ] && echo ':> "$pgm.debug"'
+	dumpvars -raw SUCCESS FAILURE DEBUG DRYRUN FORCE HUMAN_DELAY UNLINK
+	dumpvars -raw USE_DIALOG USE_XDIALOG USE_ZENITY
+	dumpvars -doc SH_DECODER_CMD
+	if [ "$USE_ZENITY" ]; then
+		echo "$zdialog_gauge_function"
+		dumpvars -raw USE_COLOR
+	fi
+	echo dpv $dpv_mode -p\"$DPV_PREFIX\" -a\"$DPV_APPEND\" \
+		-x\"\$SH_DECODER_CMD\" -- $DPV_ARG_LIST \
+		${USE_ZENITY:+2> /dev/null | zdialog_gauge --title \"\$pgm\"}
+	exit $SUCCESS
+fi
+
+# NOTREACHED unless DEBUG <= 0
+
+eval dpv $dpv_mode -p\"$DPV_PREFIX\" -a\"$DPV_APPEND\" \
+	-x\"\$SH_DECODER_CMD\" -- $DPV_ARG_LIST \
+	${USE_ZENITY:+2> /dev/null | zdialog_gauge --title \"\$pgm\"}
+
+################################################################################
+# END
+################################################################################
+#
+# $Copyright: 2015 Devin Teske. All rights reserved. $
+#
+# $Header$
+#
+################################################################################
