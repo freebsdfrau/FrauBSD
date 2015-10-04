@@ -1,0 +1,22 @@
+#!/bin/sh
+pgm="${0##*/}" PORT=4242 KEYFILE="/tmp/stalk.$$" DELETE_KEYFILE=1 SERVER=
+usage() { exec >&2
+	printf "Usage (SERVER): %s [-p PORT] [-k keyfile] -s\n" "$pgm"
+	printf "Usage (CLIENT): %s [-p PORT] host\n" "$pgm"
+	exit 1
+}
+while getopts hk:p:s flag; do
+	case "$flag" in
+	k) KEYFILE="$OPTARG" DELETE_KEYFILE= ;;
+	p) PORT="$OPTARG" ;;
+	s) SERVER=1 ;;
+	*) usage
+	esac
+done
+shift $(( $OPTIND - 1 ))
+[ $# -gt 0 ] && { openssl s_client -host "$1" -port "$PORT"; exit; }
+[ "$SERVER" ] || usage
+[ -e "$KEYFILE" ] || openssl req -nodes -new -x509 -batch \
+	-out "$KEYFILE" -keyout "$KEYFILE" || exit
+[ "$DELETE_KEYFILE" ] && trap "rm -f $KEYFILE" EXIT
+openssl s_server -cert "$KEYFILE" -accept "$PORT"
