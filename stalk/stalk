@@ -1,9 +1,21 @@
 #!/bin/sh
 pgm="${0##*/}" PORT=4242 KEYFILE="/tmp/stalk.$$" DELETE_KEYFILE=1 SERVER=
+: ${USER:=$( id -nu )} ${HOSTNAME:=$( hostname )}
+: ${NICK:=$USER@${HOSTNAME%%.*}} ${RETRY:=10}
 usage() { exec >&2
 	printf "Usage (SERVER): %s [-p PORT] [-k keyfile] -s\n" "$pgm"
 	printf "Usage (CLIENT): %s [-p PORT] host\n" "$pgm"
 	exit 1
+}
+ifilter() {
+	ANSI="${ANSI:-35;1}" NICK="$NICK" awk "$@" '
+		BEGIN { if (ENVIRON["ANSI"]) {
+			c_ = sprintf("%c[%sm", 27, ENVIRON["ANSI"])
+			_c = sprintf("%c[0m", 27)
+		}}
+		sub(/^/, sprintf("%s%s%s ", c_"<"_c, ENVIRON["NICK"], c_">"_c))
+		fflush()
+	' # END-QUOTE
 }
 while getopts hk:p:s flag; do
 	case "$flag" in
@@ -14,9 +26,13 @@ while getopts hk:p:s flag; do
 	esac
 done
 shift $(( $OPTIND - 1 ))
-[ $# -gt 0 ] && { openssl s_client -host "$1" -port "$PORT"; exit; }
+[ $# -gt 0 ] && { ifilter | ( while :; do
+	openssl s_client -host "$1" -port "$PORT"
+	printf "connect:retry=%u\n" "$RETRY"
+	sleep "$RETRY"
+done ); exit; }
 [ "$SERVER" ] || usage
 [ -e "$KEYFILE" ] || openssl req -nodes -new -x509 -batch \
 	-out "$KEYFILE" -keyout "$KEYFILE" || exit
 [ "$DELETE_KEYFILE" ] && trap "rm -f $KEYFILE" EXIT
-openssl s_server -cert "$KEYFILE" -accept "$PORT"
+ifilter | openssl s_server -cert "$KEYFILE" -accept "$PORT"
