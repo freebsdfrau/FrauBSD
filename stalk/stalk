@@ -1,14 +1,39 @@
 #!/bin/sh
-pgm="${0##*/}" PORT=4242 KEYFILE="/tmp/stalk.$$" DELETE_KEYFILE=1 SERVER=
+pgm="${0##*/}" PORT=4242 RETRY=10 SERVER= QUIET= PARANOID=
+TMPKEYFILE="/tmp/$pgm.$$" KEYTIMEOUT=
+KEYFILE="$TMPKEYFILE" DELETE_KEYFILE=1
 : ${USER:=$( id -nu )} ${HOSTNAME:=$( hostname )}
-: ${NICK:=$USER@${HOSTNAME%%.*}} ${RETRY:=10}
+: ${NICK:=$USER@${HOSTNAME%%.*}}
 usage() { exec >&2
-	printf "Usage (SERVER): %s [-q] [-p PORT] [-k keyfile] -s\n" "$pgm"
-	printf "Usage (CLIENT): %s [-q] [-p PORT] host\n" "$pgm"
+	local optfmt="\t%-12s %s\n" envfmt="\t%-10s %s\n"
+	printf "Usage (SERVER): %s [OPTIONS] { -s | -P | -t num}\n" "$pgm"
+	printf "Usage (CLIENT): %s [OPTIONS] host[:port]\n" "$pgm"
+	printf "OPTIONS:\n"
+	printf "$optfmt" "-k keyfile" \
+		"Server private key file. Ignored if given \`-t num'."
+	printf "$optfmt" "-p port" \
+		"Port to listen/connect to on the remote host. Default $PORT."
+	printf "$optfmt" "-P" \
+		"Paranoid mode. Cycle keys often and do it quietly."
+	printf "$optfmt" "-q" "Quiet mode. Quell most connection details."
+	printf "$optfmt" "-r num" \
+		"Client number of seconds to wait between retries."
+	printf "$optfmt" "-s" \
+		"Server mode. Listen for connections on port $PORT."
+	printf "$optfmt" "-t num" \
+		"Server. Generate new temporary key every num seconds."
+	printf "ENVIRONMENT:\n"
+	printf "$envfmt" "NICK" "Nickname to use for your chat handle."
+	printf "$envfmt" "USER" \
+		"Username to use in \`USER@HOSTNAME' when NICK is NULL/unset"
+	printf "$envfmt" "HOSTNAME" \
+		"Hostname to use in \`USER@HOSTNAME' when NICK is NULL/unset"
+	printf "$envfmt" "ANSI" \
+		"ANSI escape sequence for coloring text. Default is \`35;1'."
 	exit 1
 }
 ifilter() {
-	ANSI="${ANSI:-35;1}" NICK="$NICK" awk "$@" '
+	ANSI="${ANSI-35;1}" NICK="$NICK" awk "$@" '
 		BEGIN { if (ENVIRON["ANSI"]) {
 			c_ = sprintf("%c[%sm", 27, ENVIRON["ANSI"])
 			_c = sprintf("%c[0m", 27)
@@ -17,23 +42,59 @@ ifilter() {
 		fflush()
 	' # END-QUOTE
 }
-while getopts hk:p:qs flag; do
+while getopts hk:p:Pqr:st: flag; do
 	case "$flag" in
 	k) KEYFILE="$OPTARG" DELETE_KEYFILE= ;;
 	p) PORT="$OPTARG" ;;
+	P) PARANOID=1 KEYFILE="$TMPKEYFILE" QUIET=1
+	   : ${KEYTIMEOUT:=10} ${RETRY:=0.5} ;;
 	q) QUIET=1 ;;
+	r) RETRY="$OPTARG" ;;
 	s) SERVER=1 ;;
+	t) SERVER=1 KEYFILE="$TMPKEYFILE" KEYTIMEOUT="$OPTARG" ;;
 	*) usage
 	esac
 done
 shift $(( $OPTIND - 1 ))
+req_args='-nodes -new -x509 -batch -out "$KEYFILE" -keyout "$KEYFILE"'
+s_server_args='-cert "$KEYFILE" -accept "$PORT"'
+s_client_args='-host "$1" -port "$PORT"'
+if [ "$PARANOID" ]; then
+	echo "Listening on *:$PORT"
+	echo "Paranoid key refresh interval is $KEYTIMEOUT seconds..."
+	req_args="$req_args > /dev/null 2>&1"
+	s_client_args="$s_client_args 2> /dev/null"
+fi
+for cmd in ${QUIET:+s_server s_client}; do
+	eval "${cmd}_args=\"-quiet \$${cmd}_args\""
+done
+for cmd in req s_server s_client; do
+	eval "$cmd(){ eval openssl $cmd \"\$${cmd}_args\"; }"
+done
 [ $# -gt 0 ] && { ifilter | ( while :; do
-	openssl s_client ${QUIET:+-quiet} -host "$1" -port "$PORT"
-	printf "connect:retry=%u\n" "$RETRY"
+	s_client "$1"
+	[ "$PARANOID" ] || printf "connect:retry=%s\n" "$RETRY"
 	sleep "$RETRY"
-done ); exit; }
-[ "$SERVER" ] || usage
-[ -e "$KEYFILE" ] || openssl req -nodes -new -x509 -batch \
-	-out "$KEYFILE" -keyout "$KEYFILE" || exit
-[ "$DELETE_KEYFILE" ] && trap "rm -f $KEYFILE" EXIT
-ifilter | openssl s_server ${QUIET:+-quiet} -cert "$KEYFILE" -accept "$PORT"
+done); exit; }
+[ "$SERVER" -o "$PARANOID" ] || usage
+[ "$DELETE_KEYFILE" ] && trap 'rm -f "$KEYFILE"' EXIT
+set -m # job control
+while :; do
+	[ -e "$KEYFILE" -a ! "$KEYTIMEOUT" ] || req || exit
+	ifilter | s_server &
+	s_server_pid=$!
+	( [ "$KEYTIMEOUT" ] || exit
+	  sleep "$KEYTIMEOUT"
+	  s_server_parent=$( ps -o ppid= -p $s_server_pid )
+	  ifilter_pid=$( ps -ax -o pid,ppid,ucomm |
+	  	awk -v ppid=$s_server_parent '$2$3==ppid"awk"{print $1}' )
+	  kill $s_server_pid $ifilter_pid > /dev/null 2>&1
+	) &
+	eval fg %1 2\> /dev/null ${PARANOID:+>&2}
+	retval=$?
+	case "$retval" in
+	0|130) echo; break ;;
+	143) : ignored ;;
+	*) echo "retval=$retval"
+	esac
+done
