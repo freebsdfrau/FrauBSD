@@ -1,0 +1,21 @@
+#!/bin/sh
+. /usr/share/bsdconfig/device.subr || exit
+[ "$( id -u )" -eq 0 ] && WITH_CAMCONTROL=1
+while :; do
+	info="gpart(8) show %s:\n%s\n\n" disk= gpart= inquiry= identify=
+        device=$( msg_cancel=Done f_device_menu "$DIALOG_TITLE" \
+		"Select a disk device" "$hline_arrows_tab_enter" \
+                $DEVICE_TYPE_DISK 2>&1 ) || break
+        $device get name disk
+	gpart=$( gpart show $disk 2>&1 )
+	if [ "$WITH_CAMCONTROL" ]; then
+		inquiry=$( camcontrol inquiry $disk 2>&1 )
+		identify=$( camcontrol identify $disk 2>&1 )
+	else
+		info="${info}WARNING! Must be root to use camcontrol(8)!\n"
+	fi
+	[ "$inquiry" ] && info="${info}camcontrol(8) inquiry $disk:\n%s\n\n"
+	[ "$identify" ] && info="${info}camcontrol(8) identify $disk:\n%s\n"
+	f_show_msg "$info" "$disk" "$gpart" \
+		${inquiry:+"$inquiry"} ${identify:+"$identify"}
+done
