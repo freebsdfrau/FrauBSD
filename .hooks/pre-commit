@@ -1,7 +1,7 @@
 #!/bin/sh
 ############################################################ IDENT(1)
 #
-# $Title: Hook to before `git commit' $
+# $Title: Hook to run before `git commit' $
 #
 ############################################################ INFORMATION
 #
@@ -29,6 +29,6 @@ git diff --cached --name-only --diff-filter=ACM |
 #
 # $Copyright: 2015 The FrauBSD Project. All rights reserved. $
 #
-# $FrauBSD: .hooks/pre-commit 2015-10-20 22:43:04 -0700 freebsdfrau $
+# $FrauBSD: .hooks/pre-commit 2015-10-20 23:01:53 -0700 freebsdfrau $
 #
 ################################################################################
