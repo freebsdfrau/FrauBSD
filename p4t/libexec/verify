@@ -1,0 +1,142 @@
+#!/bin/sh
+############################################################ IDENT(1)
+#
+# $Title: Script to perform p4 verify against local p4d $
+#
+############################################################ CONFIGURATION
+
+#
+# User to perform verify as
+#
+P4D_USER= # overide with -u user
+
+#
+# Local perforce server settings
+# NB: Taken from rc.conf(5) on FreeBSD
+#
+P4D_PORT=$( sysrc -n p4d_port 2> /dev/null ) # override with -p port
+
+############################################################ GLOBALS
+
+pgm="${0##*/}" # Program basename
+
+#
+# Global exit status
+#
+SUCCESS=0
+FAILURE=1
+
+#
+# Command-line options
+#
+QUIET=		# -q
+TRANSFER=	# -t
+
+#
+# Miscellaneous
+#
+export LC_ALL="${LC_ALL:-en_US.ISO8859-1}" # separators in dpv(1) status
+: ${UNAME_s:=$( uname -s )}
+
+############################################################ FUNCTIONS
+
+die()
+{
+	local fmt="$1"
+	exec >&2
+	if [ "$fmt" ]; then
+		shift 1 # fmt
+		printf "$fmt\n" "$@"
+	fi
+	exit $FAILURE
+}
+
+usage()
+{
+	exec >&2
+	local optfmt="\t%-8s %s\n"
+	printf "Usage: %s [-p port] [-qt] [-u user]\n" "$pgm"
+	printf "OPTIONS:\n"
+	printf "$optfmt" "-p port" "Server port (default local system's p4d)."
+	printf "$optfmt" "-q" "Quiet. Don't display performance metrics."
+	printf "$optfmt" "-t" "Transfer broken/missing files (replicas only)."
+	printf "$optfmt" "-u user" "Perform verify as user (default $P4D_USER)."
+	exit $FAILURE
+}
+
+############################################################ MAIN
+
+#
+# Command-line options
+#
+while getopts p:qtu: flag; do
+	case "$flag" in
+	p) P4D_PORT="$OPTARG" ;;
+	q) QUIET=1 ;;
+	t) TRANSFER=1 ;;
+	u) P4D_USER="$OPTARG" ;;
+	*) usage
+	esac
+done
+shift $(( $OPTIND - 1 ))
+
+#
+# Make sure we have HOST:PORT for the local p4d
+#
+if [ "$P4D_PORT" ]; then
+	: good to go # I.e., FreeBSD (see rc.conf(5)) or `-p port' given
+elif [ "$UNAME_s" = "FreeBSD" ]; then
+	: skip below # rc.conf(5) drives the setting
+elif [ -f "/etc/init.d/p4d" ]; then # I.e., Linux
+	eval "$( { exec >&- 2>&- 
+		eval "$( awk 'gsub(/exit/,":")||1' /etc/init.d/p4d )"
+		if [ "$p4d_port_interface" -a ! "$p4d_port" ]; then
+			p4d_port=$( ifconfig "$p4d_port_interface" | awk '
+				sub(/inet addr:/, "") { print addr = $1; exit}
+				END { exit !addr }
+			' ) && p4d_port="$p4d_port:1666"
+		fi
+		echo "P4D_PORT=${p4d_port%%[!0-9a-zA-Z.\[\]:-]}" >&3
+	} 3>&1 )"
+else # I.e., Other Linux
+	export SUDO_PROMPT="[sudo] Password:"
+	P4D_PORT=$( sudo lsof -nPi 4:1666 -a -c p4d | awk '
+		sub(/\(LISTEN\)$/, "") { print p4d_port = $NF }
+		END { exit !p4d_port }
+	' ) || die "p4d is not running."
+fi
+
+#
+# Make sure local p4d is running
+#
+err=$( p4 ${P4D_PORT:+-p "$P4D_PORT"} ${P4D_USER:+-u "$P4D_USER"} \
+	info -s 2>&1 ) || die "%s" "$err"
+
+#
+# Run quiet verification (if-desired)
+#
+if [ "$QUIET" ]; then
+	p4 ${P4D_PORT:+-p "$P4D_PORT"} ${P4D_USER:+-u "$P4D_USER"} \
+		verify -q ${TRANSFER:+-t} //...
+	exit
+fi
+
+# NOTREACHED if `-q' given
+
+#
+# Run visual verification with performance metrics
+#
+p4 ${P4D_PORT:+-p "$P4D_PORT"} ${P4D_USER:+-u "$P4D_USER"} \
+	verify ${TRANSFER:+-t} //... 2>&1 | time dpv -lwb "$pgm" -t "p4d" \
+	-p "Verifying ${P4D_PORT:-${P4PORT:-perforce:1666}} depot...\n" \
+	-a "\nThis may take a while." "    //"
+
+################################################################################
+# END
+################################################################################
+#
+# $Copyright: 2015 Devin Teske. All rights reserved. $
+#
+# $FrauBSD: p4t/libexec/verify 2015-10-20 23:32:05 -0700 freebsdfrau $
+#
+################################################################################

@@ -1,0 +1,99 @@
+#!/bin/sh
+############################################################ IDENT(1)
+#
+# $Title: Script to access other scripts in the `libexec/p4t' directory $
+#
+############################################################ CONFIGURATION
+
+LIBEXEC=libexec/p4t
+
+############################################################ GLOBALS
+
+#
+# Global exit status
+#
+SUCCESS=0
+FAILURE=1
+
+pgm="${0##*/}" # program basename
+progdir="${0%/*}" # program directory
+
+############################################################ FUNCTIONS
+
+usage()
+{
+	local cmd_list= # Calculated below
+
+	# If our libexec dir exists, get a list of [executable] files within
+	# NB: No need to preserve CWD (headed toward exit)
+	cd "$progdir/../$LIBEXEC" && cmd_list=$( find -xs . \
+		-maxdepth 1 -type f -perm +111 | awk 'sub("^\\./","")||1' )
+
+	# Determine the longest command-length vs terminal width
+	local max_size="$( stty size 2> /dev/null )"
+	local max_width="${max_size#*[$IFS]}"
+	local longest_cmd="$( echo "$cmd_list" | awk '
+		{ longest = ((len = length($0)) > longest ? len : longest) }
+		END { print longest }
+	' )"
+
+	# Using the longest command-length as the width of a single column,
+	# determine if we can use more than one column to display commands.
+	local x=$longest_cmd ncols=1
+	x=$(( $x + 8 )) # Accommodate leading tab character
+	x=$(( $x + 3 + $longest_cmd )) # Preload end of next column
+	while [ $x -lt ${max_width:=80} ]; do
+		ncols=$(( $ncols + 1 ))
+		x=$(( $x + 3 + $longest_cmd ))
+	done
+
+	# Re-format the command-list into multiple columns
+	cmd_list=$( eval "$( echo "$cmd_list" |
+		awk -v ncols=$ncols -v size=$longest_cmd '
+		BEGIN { row_item[1] = "" }
+		function print_row() {
+			fmt = "printf \"\\t%-" size "s"
+			for (i = 1; i < cur_col; i++)
+				fmt = fmt "   %-" size "s"
+			fmt = fmt "\\n\""
+			printf "%s", fmt
+			for (i = 1; i <= cur_col; i++)
+				printf " \"%s\"", row_item[i]
+			print ""
+		} {
+			cur_col = ((NR - 1) % ncols) + 1
+			row_item[cur_col] = $0
+			if (cur_col == ncols) print_row()
+		}
+		END { if (cur_col < ncols) print_row() }
+	' )" )
+	
+	exec >&2
+	printf "Usage: %s [command [args ...]]\n" "$pgm"
+	printf "COMMANDS:\n%s\n" "$cmd_list"
+	exit $FAILURE
+}
+
+############################################################ MAIN
+
+#
+# Validate command-line arguments
+#
+[ $# -gt 0 ] || usage
+
+#
+# Hand execution over to `libexec/p4t/command'
+#
+COMMAND=${1%%[^a-zA-Z_0-9.-]*}
+shift
+exec /usr/local/libexec/p4t/$COMMAND "$@"
+
+################################################################################
+# END
+################################################################################
+#
+# $Copyright: 2015 Devin Teske. All rights reserved. $
+#
+# $FrauBSD: p4t/p4t 2015-10-20 23:32:05 -0700 freebsdfrau $
+#
+################################################################################

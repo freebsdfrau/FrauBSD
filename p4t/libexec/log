@@ -1,0 +1,63 @@
+#!/bin/sh
+############################################################ IDENT(1)
+#
+# $Title: Script to dump p4d log entries $
+#
+############################################################ GLOBALS
+
+pgm="${0##*/}" # Program basename
+
+#
+# Global exit status
+#
+SUCCESS=0
+FAILURE=1
+
+#
+# Miscellaneous
+# NB: For usage() statement only (not exported)
+#
+P4D_ROOT=$( sysrc -n p4d_root 2> /dev/null )
+P4D_LOG=$( sysrc -n p4d_log 2> /dev/null )
+: ${P4D_ROOT:=/perforce}
+: ${P4D_LOG:=$P4D_ROOT/logs/p4log}
+unset P4D_ROOT
+
+############################################################ FUNCTIONS
+
+usage()
+{
+	exec >&2
+	local optfmt="\t%-8s %s\n"
+	printf "Usage: %s [OPTIONS] [regex]\n" "$pgm"
+	printf "OPTIONS:\n"
+	printf "$optfmt" "regex" \
+		"awk(1) regular expression for matching log entries."
+	printf "$optfmt" "-NUM" \
+		"Limit output to at-most NUM mathing entries."
+	printf "$optfmt" "-A NUM" \
+		"Show NUM lines of context following matched entries."
+	printf "$optfmt" "-B NUM" \
+		"Show NUM lines of context leading up to matched entries."
+	printf "$optfmt" "-c" \
+		"Always enable color, even to non-terminals (e.g., pipes)."
+	printf "$optfmt" "-f file" \
+		"Read file (\`-' for stdin; Default $P4D_LOG)."
+	printf "$optfmt" "-n" \
+		"Disable the use of color highlighting on terminals."
+	exit $FAILURE
+}
+
+############################################################ MAIN
+
+exec p4t server_log "$@" '^[^\n]+'
+
+################################################################################
+# END
+################################################################################
+#
+# $Copyright: 2015 Devin Teske. All rights reserved. $
+#
+# $FrauBSD: p4t/libexec/log 2015-10-20 23:32:05 -0700 freebsdfrau $
+#
+################################################################################

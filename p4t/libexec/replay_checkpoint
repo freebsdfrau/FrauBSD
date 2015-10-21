@@ -1,0 +1,252 @@
+#!/bin/sh
+############################################################ IDENT(1)
+#
+# $Title: Script to replay perforce checkpoint $
+#
+############################################################ CONFIGURATION
+
+#
+# User to perform replay as
+#
+P4D_USER=p4admin
+
+#
+# Local perforce server settings
+# NB: Taken from rc.conf(5) on FreeBSD
+#
+P4D_ROOT=$( sysrc -n p4d_root 2> /dev/null )
+
+#
+# Sensible defaults (i.e., Linux)
+#
+: ${P4D_ROOT:=/perforce}
+
+############################################################ GLOBALS
+
+pgm="${0##*/}" # Program basename
+
+#
+# Global exit status
+#
+SUCCESS=0
+FAILURE=1
+
+#
+# Command-line options
+#
+DEBUG=		# -d
+ROOTDIR=	# -R dir
+UNPACK_ONLY=	# -U
+USER=		# -u user
+
+#
+# Miscellaneous
+#
+export LC_ALL="${LC_ALL:-en_US.ISO8859-1}" # separators in dpv(1) status
+FIFO=replay_fifo.$$
+FILE=
+GZFILE=
+STOPPED_P4D=
+
+# TODO: Add `-V' option to perform md5(1) verification when *.md5 exists
+# NOTE: LC_ALL=en_US.ISO8859-1 dpv -xmd5 $( stat -f%z $FILE ):$FILE < $FILE
+#       wrapped in a sub-shell to capture output and add `-t title' et al.
+
+############################################################ FUNCTIONS
+
+quietly(){ "$@" > /dev/null 2>&1; }
+have(){ quietly type "$@"; }
+
+die()
+{
+	local fmt="$1"
+	exec >&2
+	if [ "$fmt" ]; then
+		shift 1 # fmt
+		printf "$fmt\n" "$@"
+	fi
+	exit $FAILURE
+}
+
+usage()
+{
+	exec >&2
+	local optfmt="\t%-8s %s\n"
+	printf "Usage: %s [-U|-d] [OPTIONS] checkpoint.NNNN[.gz]\n" "$pgm"
+	printf "OPTIONS:\n"
+	printf "$optfmt" "-U" \
+		"Unpack the checkpoint if-required (first step) and exit."
+	printf "$optfmt" "-d" \
+		"Debug. Don't stop p4d and don't replay but simulate it."
+	printf "$optfmt" "-R dir" \
+		"Perform replay in dir (default $P4D_ROOT)."
+	printf "$optfmt" "-u user" \
+		"Perform replay as user (default $P4D_USER)."
+	exit $FAILURE
+}
+
+############################################################ MAIN
+
+#
+# Command-line options
+#
+while getopts dR:u:U flag; do
+	case "$flag" in
+	d) DEBUG=1 ;;
+	R) ROOTDIR="$OPTARG" ;;
+	u) USER="$OPTARG" ;;
+	U) UNPACK_ONLY=1 ;;
+	*) usage
+	esac
+done
+shift $(( $OPTIND - 1 ))
+FILE="$1"
+
+#
+# Validate command-line arguments
+#
+[ "$FILE" ] || usage
+# set after last-call to usage()
+P4D_ROOT="${ROOTDIR:-$P4D_ROOT}"
+P4D_USER="${USER:-$P4D_USER}"
+
+#
+# All actions should be performed within the p4d_root (e.g., /perforce)
+#
+cd "$P4D_ROOT" || exit
+
+#
+# Validate command-line arguments (continued)
+#
+[ "$FILE" != "${FILE%.[Gg][Zz]}" ] && GZFILE="$FILE" FILE="${FILE%.[Gg][Zz]}"
+IN="${GZFILE:-$FILE}"
+[ -e "$IN" ] || die "%s: %s: No such file or directory" "$pgm" "$IN"
+[ -f "$IN" ] || die "%s: %s: Is a directory" "$pgm" "$IN"
+
+#
+# Make sure we have required users and sufficient privileges to proceed
+#
+[ "$( id -u )" -eq 0 ] || die "Must be root!"
+id -u ${P4D_USER:+"$P4D_USER"} > /dev/null || exit
+
+#
+# If the checkpoint argument was named `*.gz' (case-insensitive), unpack the
+# checkpoint first.
+#
+if [ "$GZFILE" -a ! -e "$FILE" ]; then
+	size=$( stat -f%z "$GZFILE" )
+	trap 'rm -f "$FILE"' SIGINT
+	export FILE
+	if ! time dpv \
+		-wmx 'zcat > "$FILE"' -b "$pgm" -t "zcat(1)" \
+		-p "Unpacking checkpoint file...\n" \
+		-a "\nNEXT: Stop p4d, backup files, replay checkpoint" \
+		"${size:+$size:}    $GZFILE" "$GZFILE"
+	then
+		quietly rm -f "$FILE"
+		exit $FAILURE
+	fi
+	trap - SIGINT
+	[ ! "$P4D_USER" ] || chown "$P4D_USER" "$FILE" || exit
+	quietly chmod 0444 "$FILE"
+fi
+
+[ "$UNPACK_ONLY" ] && exit $SUCCESS
+# NOTREACHED if given `-U' option
+
+#
+# Make a backup directory for the existing db files
+#
+vers=$( p4d -V | awk '/^Rev./&&split($2,vers,"/"){print vers[3]}' ) || exit
+back="db-$vers@$( date +%F+%H_%M )"
+create=
+if [ ! "$DEBUG" ]; then
+	for f in db.* *.lbr journal state; do
+		[ -e "$f" ] || continue
+		create=1
+		break
+	done
+	[ ! "$create" ] || mkdir -pm0755 "$back" || exit
+	[ ! "$P4D_USER" ] || chown "$P4D_USER" "$back" || exit
+fi
+
+#
+# Is p4d running? (we'll pause for 10 seconds before stopping it)
+# NB: If we stop it, we'll later start it
+#
+if [ ! "$DEBUG" ] && quietly service p4d status; then
+	dialog --backtitle "$pgm" --title "Count Down" \
+		--hline "Press Ctrl-C to Abort" --nook --nocancel --pause \
+		"Stopping p4d...\nNEXT: Backup files, replay checkpoint" \
+		7 50 10
+	service p4d stop || exit
+	STOPPED_P4D=1
+fi
+
+#
+# Move the existing db files to backup directory
+#
+if [ ! "$DEBUG" ]; then
+	for f in db.* *.lbr journal state; do
+		[ -e "$f" ] || continue
+		mv -n "$f" "$back" || exit
+	done
+	[ -d "$back" ] && dialog --backtitle "$pgm" --title "Count Down" \
+		--hline "Press Ctrl-C to Abort" --nook --nocancel --pause \
+		"Files backed up to $back\nNEXT: Replay checkpoint" 7 50 10
+fi
+
+#
+# Start the replay
+#
+[ -e "$FIFO" ] || mkfifo "$FIFO" || exit
+trap 'quietly rm -f "$FIFO"' EXIT
+if [ "$DEBUG" ]; then
+	quietly cat "$FIFO" &
+else
+	cmd='p4d -r "$P4D_ROOT" -jr "$FIFO"'
+	if [ "$P4D_USER" ]; then
+		export P4D_ROOT FIFO cmd
+		if have sudo; then
+			export SUDO_PROMPT="${SUDO_PROMPT:-[sudo] Password:}"
+			sudo -Eu "$P4D_USER" sh -c 'eval "$cmd" &'
+		else
+			export P4D_USER
+			# WARNING! cmd executed by tcsh(1) (root's shell)
+			su -m <<-'EOF'
+			echo 'eval "$cmd" &' | su -m "$P4D_USER"
+			EOF
+		fi
+	else
+		eval "$cmd" &
+	fi
+fi
+size=$( stat -f%z "$FILE" )
+time dpv -wmo "$FIFO" -b "$pgm" -t "p4d" \
+	-p "Replaying checkpoint file...\n" \
+	-a "\nThis may take a while." \
+	"${size:+$size:}    $FILE" "$FILE" || exit
+wait $!
+
+#
+# Restart p4d if we stopped it (we'll pause for 10 seconds before starting it)
+# NB: Prevents error "p4d already running?  (pid=<PID>)."
+#
+if [ "$STOPPED_P4D" ]; then
+	dialog --backtitle "$pgm" --title "Count Down" \
+		--hline "Press Ctrl-C to Abort" --nook --nocancel --pause \
+		"Starting p4d..." 6 50 10
+	service p4d start || exit
+fi
+
+exit $SUCCESS
+
+################################################################################
+# END
+################################################################################
+#
+# $Copyright: 2015 Devin Teske. All rights reserved. $
+#
+# $FrauBSD: p4t/libexec/replay_checkpoint 2015-10-20 23:32:05 -0700 freebsdfrau $
+#
+################################################################################

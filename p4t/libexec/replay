@@ -1,0 +1,110 @@
+#!/bin/sh
+############################################################ IDENT(1)
+#
+# $Title: Script to replay perforce checkpoint (simple) $
+#
+############################################################ GLOBALS
+
+pgm="${0##*/}" # Program basename
+progdir="${0%/*}" # Program directory
+
+#
+# Global exit status
+#
+SUCCESS=0
+FAILURE=1
+
+#
+# Command-line options
+#
+DEBUG=		# -d
+ROOTDIR=	# -R dir
+UNPACK_ONLY=	# -U
+USER=		# -u user
+
+#
+# Miscellaneous
+#
+NUM=
+# NB: For usage() statement only (not exported)
+P4D_USER=admin
+P4D_ROOT=$( sysrc -n p4d_root 2> /dev/null )
+: ${P4D_ROOT:=/perforce}
+
+############################################################ FUNCTIONS
+
+usage()
+{
+	exec >&2
+	local optfmt="\t%-8s %s\n"
+	printf "Usage: %s [-U|-d] [OPTIONS] [NUM]\n" "$pgm"
+	printf "OPTIONS:\n"
+	printf "$optfmt" "-U" \
+		"Unpack the checkpoint if-required (first step) and exit."
+	printf "$optfmt" "-d" \
+		"Debug. Don't stop p4d and don't replay but simulate it."
+	printf "$optfmt" "-R dir" \
+		"Perform replay in dir (default $P4D_ROOT)."
+	printf "$optfmt" "-u user" \
+		"Perform replay as user (default $P4D_USER)."
+	exit $FAILURE
+}
+
+list_checkpoint_nums()
+{
+	exec >&2
+	echo "Available checkpoint numbers:"
+	p4t checkpoints ${ROOTDIR:+-R "$ROOTDIR"} |
+		awk 'sub(/^checkpoint\./,"\t")&&(sub(/\.[^.]+$/,"")||1)' |
+		sort -nu
+	exit $FAILURE
+}
+
+############################################################ MAIN
+
+#
+# Command-line options
+#
+while getopts dR:u:U flag; do
+	case "$flag" in
+	d) DEBUG=1 ;;
+	R) ROOTDIR="$OPTARG" ;;
+	u) USER="$OPTARG" ;;
+	U) UNPACK_ONLY=1 ;;
+	*) usage
+	esac
+done
+shift $(( $OPTIND - 1 ))
+NUM="$1"
+
+#
+# Validate command-line arguments
+#
+[ "$NUM" ] || list_checkpoint_nums
+
+#
+# Find out if there is such a checkpoint
+#
+if ! checkpoints=$( p4t list_checkpoint ${ROOTDIR:+-R "$ROOTDIR"} "$NUM" )
+then
+	[ -d "${ROOTDIR:-.}" ] || exit $FAILURE
+	echo "Checkpoint not available." >&2
+	list_checkpoint_nums
+fi
+checkpoint="${checkpoints%%[$IFS]*}"
+
+#
+# Hand-off execution
+#
+exec p4t replay_checkpoint ${DEBUG:+-d} ${UNPACK_ONLY:+-U} \
+	${ROOTDIR:+-R "$ROOTDIR"} ${USER:+-u "$USER"} "$checkpoint"
+
+################################################################################
+# END
+################################################################################
+#
+# $Copyright: 2015 Devin Teske. All rights reserved. $
+#
+# $FrauBSD: p4t/libexec/replay 2015-10-20 23:32:05 -0700 freebsdfrau $
+#
+################################################################################

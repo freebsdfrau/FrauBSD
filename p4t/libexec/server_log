@@ -1,0 +1,232 @@
+#!/bin/sh
+############################################################ IDENT(1)
+#
+# $Title: Script to search p4d log entries $
+#
+############################################################ CONFIGURATION
+
+#
+# Local perforce server settings
+# NB: Taken from rc.conf(5) on FreeBSD
+#
+P4D_ROOT=$( sysrc -n p4d_root 2> /dev/null )
+P4D_LOG=$( sysrc -n p4d_log 2> /dev/null )
+
+#
+# Sensible defaults (i.e., Linux)
+#
+: ${P4D_ROOT:=/perforce}
+: ${P4D_LOG:=$P4D_ROOT/logs/p4log}
+
+unset P4D_ROOT
+
+############################################################ GLOBALS
+
+pgm="${0##*/}" # Program basename
+
+#
+# Global exit status
+#
+SUCCESS=0
+FAILURE=1
+
+#
+# Command-line options
+#
+AFTER=0		# -A NUM
+BEFOR=0		# -B NUM
+COLOR=1		# -n (disable) or -c (always enabled even to non-terminal)
+LIMIT=0		# -NUM
+LOGFILE=	# -f file
+
+#
+# Miscellaneous
+#
+REGEX=  # first non-flag argument
+
+############################################################ FUNCTIONS
+
+usage()
+{
+	local fmt="$1"
+	exec >&2
+	if [ "$fmt" ]; then
+		shift 1 # fmt
+		printf "%s: $fmt\n" "$pgm" "$@"
+	fi
+	local optfmt="\t%-8s %s\n"
+	printf "Usage: %s [OPTIONS] regex\n" "$pgm"
+	printf "OPTIONS:\n"
+	printf "$optfmt" "regex" \
+		"awk(1) regular expression for matching log entries."
+	printf "$optfmt" "-NUM" \
+		"Limit output to at-most NUM mathing entries."
+	printf "$optfmt" "-A NUM" \
+		"Show NUM lines of context following matched entries."
+	printf "$optfmt" "-B NUM" \
+		"Show NUM lines of context leading up to matched entries."
+	printf "$optfmt" "-c" \
+		"Always enable color, even to non-terminals (e.g., pipes)."
+	printf "$optfmt" "-f file" \
+		"Read file (\`-' for stdin; Default $P4D_LOG)."
+	printf "$optfmt" "-n" \
+		"Disable the use of color highlighting on terminals."
+	exit $FAILURE
+}
+
+setopt()
+{
+	local __var_to_set="$1" __value="$2" __retval=0 # NB: Caller sets $arg
+	case "$arg" in
+	-??*) __retval=1 arg="-${arg#-?}" ;;
+	  -?) __retval=0 arg= ;;
+	   *) return $FAILURE
+	esac
+	eval $__var_to_set='"$__value"'
+	return $__retval # caller: 0 = shift (-X); 1 = continue (-Xv => -v)
+}
+
+setarg()
+{
+	local __var_to_set="$1" __value="$2" __retval=0 # NB: Caller sets $arg
+	case "$arg" in
+	-??*) eval __retval=0 $__var_to_set='${arg#-?}' ;;
+	  -?) eval __retval=1 $__var_to_set='"$__value"' ;;
+	esac
+	arg=
+	return $__retval # caller: 0 = shift 1 (-Xarg); 1 = shift 2 (-X arg)
+}
+
+############################################################ MAIN
+
+#
+# Process command-line arguments
+#
+while [ $# -gt 0 ]; do
+	: ${arg:="$1"}
+	case "$arg" in
+	-[0-9]*)
+		LIMIT="${arg#-}"
+		LIMIT="${LIMIT%%[!0-9]*}"
+		arg="${arg#-$LIMIT}"
+		arg="${arg:+-}$arg"
+		[ "$arg" ] && continue
+		;;
+	-A*) setarg AFTER "$2" || shift ;;
+	-B*) setarg BEFOR "$2" || shift ;;
+	-c*) setopt COLOR 2 || continue ;;
+	-f*) setarg LOGFILE "$2" || shift ;;
+	-n*) setopt COLOR 0 || continue ;;
+	-*) usage "invalid option -- %s" "${1#-}" ;;
+	 *) break # non-option argument encountered
+	esac
+	shift
+done
+REGEX="$1"
+
+#
+# Validate command-line arguments
+#
+[ "$REGEX" ] || usage
+[ "$BEFOR" = "${BEFOR%%[!0-9]*}" ] || usage "invalid \`-B NUM' argument"
+[ "$LIMIT" = "${LIMIT%%[!0-9]*}" ] || usage "invalid \`-NUM' argument"
+[ "$AFTER" = "${AFTER%%[!0-9]*}" ] || usage "invalid \`-A NUM' argument"
+P4D_LOG="${LOGFILE:-$P4D_LOG}" # set after last-call to usage()
+
+#
+# For `-n' (COLOR=0) and `-c' (COLOR=2), keep the value of COLOR as-is. In the
+# default case (COLOR=1), reset COLOR to zero if stdout is a non-terminal
+# (e.g., when stdout has been redirected to a file/pipe).
+#
+[ $COLOR -ne 1 ] || [ -t 1 ] || COLOR=0
+
+#
+# Wield awk(1) to display matching paragraphs from the p4d log file
+#
+awk -v REGEX="$REGEX" -v COLOR=$COLOR \
+	-v LIMIT=$LIMIT -v BEFOR=$BEFOR -v AFTER=$AFTER '
+	######################################## AWK(1) FUNCTIONS
+
+	function buf_print() { print buf }
+
+	function color_print()
+	{
+		pbuf = buf
+		if (COLOR) {
+			cbuf = pbuf
+			pbuf = ""
+			while (match(cbuf, REGEX)) {
+				pbuf = sprintf("%s%s%c[43;30m%s%c[49;39m",
+					pbuf, substr(cbuf, 0, RSTART - 1), 27,
+					substr(cbuf, RSTART, RLENGTH), 27)
+				cbuf = substr(cbuf, RSTART + RLENGTH)
+			}
+			pbuf = pbuf cbuf
+			if (BEFOR || AFTER)
+				pbuf = sprintf("%c[7m%s%c[27m", 27, pbuf, 27)
+		}
+		print pbuf
+	}
+
+	function bstack_add()
+	{
+		if (A) { # Print/Skip when consuming AFTER-elements
+			buf_print()
+			if (!--A && !BEFOR && N) print "--"
+			return
+		}
+		if (BEFOR <= 0) # feature not enabled
+			return
+		if (BEFOR == 1) # only one slot (easy)
+			bstack[B = 1] = buf
+		else { # multiple slots (tricky)
+			if (B < BEFOR) B++
+			for (n = B; n > 1; n--) # make room
+				bstack[n] = bstack[n-1]
+			bstack[n] = buf
+		}
+	}
+
+	function bufhandler()
+	{
+		if (!buf) return
+		if (buf ~ REGEX && (LIMIT ? N < LIMIT : 1)) {
+			if (B && N) print "--" # print hr before bstack items
+			while (B) # print the bstack and reset B to zero
+				print bstack[B--]
+			delete bstack	# erase the bstack
+			A = AFTER	# reset A to high watermark
+			color_print()	# dump matching buffer
+			N++		# increment printed matches
+		} else bstack_add()
+		buf = "" # reset buffer
+	}
+
+	######################################## AWK(1) MAIN
+
+	/^[^[:space:]]/ { # got a line beginning with non-whitespace
+		bufhandler()
+		if (LIMIT > 0 && N >= LIMIT && !A) exit
+		buf = sprintf(">>> ENTRY#%09u %s:%u: %s",
+			C++, FILENAME, FNR, $0)
+		next
+	}
+
+	# NOTREACHED unless line begins with whitespace
+	{ buf = buf "\n" $0 }
+
+	# NOTREACHED until EOF or awk(1) exit
+	END { bufhandler() }
+
+	######################################## AWK(1) END
+' "$P4D_LOG"
+
+################################################################################
+# END
+################################################################################
+#
+# $Copyright: 2015 Devin Teske. All rights reserved. $
+#
+# $FrauBSD: p4t/libexec/server_log 2015-10-20 23:32:05 -0700 freebsdfrau $
+#
+################################################################################

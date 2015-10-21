@@ -1,0 +1,471 @@
+#!/bin/sh
+############################################################ IDENT(1)
+#
+# $Title: Script to upgrade perforce elements to latest version(s) $
+#
+############################################################ CONFIGURATION
+
+#
+# Components to check for upgrade
+# NB: Entries should be all-uppercase
+# NB: Items should exactly match below variable name(s)
+#
+CHECK_FOR_UPGRADE="P4 P4D P4WEB"
+
+#
+# Locations of installed objects (to be upgraded)
+# NB: Variable names should be all-uppercase
+# NB: Variable names should match entries in $CHECK_FOR_UPGRADE above
+#
+P4=$( which p4 ) || P4=/bin/p4
+P4D=$( which p4d ) || P4D=/usr/local/bin/p4d
+P4WEB=$( which p4web ) || P4WEB=/usr/local/bin/p4web
+
+#
+# Web page where downloads are acquired
+#
+PERFORCE_CUSTOMER_DL_PAGE=http://www.perforce.com/downloads/Perforce/Customer
+PERFORCE_DIRECT_DOWNLOAD=http://www.perforce.com/downloads/perforce/
+
+#
+# Where to download temporary files to
+#
+DOWNLOAD_TMP=/tmp
+
+#
+# OS Glue
+#
+: ${UNAME_s:=$( uname -s )}
+
+#
+# p4d specifics
+#
+P4PORT= # Desired p4d (host:port); if NULL lsof(8)/sockstat(1) is used
+P4USER= # Used to shut down p4d; if NULL (default) prompt user
+P4D_PID= # If NULL (default), ps(1) is used to find PID of p4d
+
+#
+# Command-line options
+#
+IGNORE_BETA=1
+IGNORE_CURRENT=1
+
+############################################################ MAIN
+
+#
+# Process command-line arguments
+#
+while getopts bch flag; do
+	case "$flag" in
+	b) IGNORE_BETA= ;;
+	c) IGNORE_CURRENT= ;;
+	\?|h)
+		echo "Usage: $0 [-bch]" >&2
+		echo "Options:" >&2
+		echo "    -b     Allow upgrade to betas" >&2
+		echo "    -c     Allow upgrade to 'current' latest" >&2
+		echo "    -h     Print this usage statement and exit" >&2
+		exit 1
+		;;
+	esac
+done
+shift $(( $OPTIND - 1 ))
+
+# Must be root!
+[ $( id -u ) -eq 0 ] || { echo "Must be root!" >&2; exit 1; }
+
+#
+# 1. Prune out bits that are not installed
+# NB: Only reached if running as root
+#
+_CHECK_FOR_UPGRADE=
+for var in $CHECK_FOR_UPGRADE; do
+	eval util=\"\$$var\"
+	[ -e "$util" ] || continue
+	_CHECK_FOR_UPGRADE="$_CHECK_FOR_UPGRADE $var"
+done
+CHECK_FOR_UPGRADE="${_CHECK_FOR_UPGRADE# }"
+
+#
+# 2. Get current versions of [installed] items -- if-any
+#
+echo "Checking installed software version(s)..."
+for var in $CHECK_FOR_UPGRADE; do
+	eval util=\"\$$var\"
+	printf "\t%s=%s\n" $var "$util"
+	eval ${var}VERSION=\$\( \$util -V \| awk -F"'[ /]'" -v var=$var \''
+		toupper($2) == var, $0 = $4 "/" $5
+	'\' \)
+done
+
+#
+# 3. Display the information that we got off the local machine
+#
+echo ">>> Here's what I found:"
+[ "$CHECK_FOR_UPGRADE" ] || { echo "Nothing found. Exiting." >&2; exit 1; }
+for var in $CHECK_FOR_UPGRADE; do
+	eval printf '"\t%sVERSION=%s\n"' $var \"\$${var}VERSION\"
+done
+echo
+echo "NEXT STEP: Scrape the download page for latest version info"
+read -p "< Press ENTER/RETURN to continue, Ctrl-C to abort >" IGNORED
+
+#
+# 4. Find out what the latest versions are
+# NB: Only reached if something is installed
+#
+echo "================================================================"
+echo "Scraping $PERFORCE_CUSTOMER_DL_PAGE ..."
+LATEST_VERSIONS=$( wget -O- "$PERFORCE_CUSTOMER_DL_PAGE" 2> /dev/null | awk \
+	-v ignore_current="${IGNORE_CURRENT:-0}" \
+	-v ignore_beta="${IGNORE_BETA:-0}" '
+BEGIN {
+	(cmd = "uname -s") | getline os
+	close(cmd)
+	(cmd = "uname -r") | getline rel
+	close(cmd)
+	(cmd = "uname -m") | getline march
+	close(cmd)
+	if (os ~ /^(Linux|FreeBSD|Solaris)$/) arch = (march ~ /i[3-6]86/ ?
+		"32-bit Intel (x86)" : "64-bit Intel (x64)")
+	else if (os ~ /^(NetBSD)$/) arch = "32-bit Intel"
+	else if (os ~ /^(Darwin)$/)
+		arch = (march ~ /i[3-6]86/ ? "x86" : "x86_64")
+
+	osrel = os
+	if (os ~ /^(FreeBSD|Darwin|Solaris|NetBSD)$/)
+	{
+		sub(/[^[:digit:].].*/, "", rel)
+		osrel = sprintf("%s %s", os, rel)
+	}
+	else if (os ~ /^(Linux)$/)
+	{
+		split(rel, relnums, /[.-]/)
+		osrel = sprintf("%s %u%s%u", os,
+			relnums[1], relnums[2] ? "." : "", relnums[2])
+	}
+}
+/(beta)/ && ignore_beta { next }
+match($0, /class="product-title"/) {
+	product = substr($0, RSTART + RLENGTH + 1)
+	sub(/[^[:alnum:]].*/, "", product)
+}
+/class="items"/ && match($0, /value="[^"]*"/) {
+	value = substr($0, RSTART + 7, RLENGTH - 8)
+	gsub(/&quot;/, "\"", value)
+	gsub(/{/, "&\n", value)
+	nitems = split(value, items, /\n/)
+	desc = ""
+	for (n = 1; n <= nitems; n++)
+	{
+		if (match(items[n], /^"description":"[^"]*"/))
+			desc = substr(items[n], RSTART + 15, RLENGTH - 16)
+		if (desc != sprintf("%s for %s", osrel, arch)) continue
+		if (items[n] !~ /^"version_id":/) continue
+		if (items[n] ~ /"release_state":"current"/)
+		{
+			# Always take latest p4web even if current track
+			if (ignore_current && tolower(product) != "p4web")
+				continue
+		}
+		if (!match(items[n], /"version_string":"[^"]*"/)) continue
+		version_str = substr(items[n],
+			RSTART + 18, RLENGTH - 19)
+		gsub("\\\\/", "/", version_str)
+		sub("[^0-9./].*", "", version_str)
+		printf "%sLATEST=%s\n", toupper(product), version_str
+		break
+	}
+}' )
+
+#
+# 5. Display the information that we got off the web
+#
+echo ">>> Here's what I found:"
+[ "$LATEST_VERSIONS" ] || { echo "Nothing found. Exiting." >&2; exit 1; }
+echo "$LATEST_VERSIONS" | while read LINE; do
+	report_latest=
+	for var in $CHECK_FOR_UPGRADE; do
+		[ "$var" = "${LINE%%LATEST=*}" ] && report_latest=1 break
+	done
+	[ "$report_latest" ] || continue
+	printf "\t%s\n" "$LINE"
+done
+echo
+echo "NEXT STEP: Compare installed versions to latest versions"
+read -p "< Press ENTER/RETURN to continue, Ctrl-C to abort >" IGNORED
+
+#
+# 6. Check to see if any installed versions are behind latest versions
+# NB: Only reached if the web was reachable and downloads were found
+#
+echo "================================================================"
+eval "$LATEST_VERSIONS" || exit 1
+echo ">>> Checking to see if any installed components need upgrading..."
+NEED_UPGRADE=
+for var in $CHECK_FOR_UPGRADE; do
+	eval current_version=\"\$${var}VERSION\"
+	eval latest_version=\"\$${var}LATEST\"
+	if [ "$current_version" != "$latest_version" ]; then
+		NEED_UPGRADE="$NEED_UPGRADE $var"
+	fi
+done
+NEED_UPGRADE="${NEED_UPGRADE# }"
+
+#
+# 7. Display the results to the user
+#
+echo
+if [ ! "$NEED_UPGRADE" ]; then
+	echo "None of the requested components need upgrading!"
+	echo "Exiting. (Success)"
+	exit 0
+fi
+for var in $NEED_UPGRADE; do
+	eval current=\"\$${var}VERSION\"
+	eval latest=\"\$${var}LATEST\"
+	printf "\t%-10s %-13s -> %s\n" $var: "$current" "$latest"
+done
+echo
+echo "NEXT STEP: Fetch latest versions to temporary location"
+read -p "< Press ENTER/RETURN to continue, Ctrl-C to abort >" IGNORED
+
+#
+# 8. Determine which daemons if-any are being upgraded
+# NB: Only reached if something needs upgrading
+#
+UPGRADE_P4D=
+UPGRADE_P4WEB=
+for var in $NEED_UPGRADE; do
+	case "$var" in
+	P4D) UPGRADE_P4D=1 ;;
+	P4WEB) UPGRADE_P4WEB=1 ;;
+	esac
+done
+
+#
+# 9. Download the latest versions to a temporary directory
+#
+echo "================================================================"
+echo ">>> Fetching latest versions to temporary location ($DOWNLOAD_TMP)..."
+dlarch=linux26
+case "$( uname -m )" in
+i[3-6]86) dlarch="${dlarch}x86" ;;
+       *) dlarch="${dlarch}x86_64"
+esac
+echo
+for var in $NEED_UPGRADE; do
+	eval dlver=\"\$${var}LATEST\"
+	dlver="${dlver%%/*}"
+	dlver="r${dlver#20}"
+	download_url="${PERFORCE_DIRECT_DOWNLOAD%/}/$dlver/bin.$dlarch"
+	eval util=\"\$$var\"
+	util_name="${util##*/}"
+	rm -f "$DOWNLOAD_TMP/$util_name"
+	wget -O "$DOWNLOAD_TMP/$util_name" "$download_url/$util_name"
+	chmod +x "$DOWNLOAD_TMP/$util_name"
+done
+echo
+echo "NEXT STEP: Make copies of old versions"
+read -p "< Press ENTER/RETURN to continue, Ctrl-C to abort >" IGNORED
+
+#
+# 10. Copy old versions
+#
+echo "================================================================"
+echo ">>> Make copies of old versions ($NEED_UPGRADE)..."
+for var in $NEED_UPGRADE; do
+	eval util=\"\$$var\"
+	eval oldver=\"\$${var}VERSION\"
+	backup_copy="$util.${oldver%%/*}"
+	if [ -e "$backup_copy" ]; then
+		echo "$backup_copy (skipped)"
+	else
+		cp -fv "$util" "$backup_copy"
+	fi
+done
+echo
+echo "NEXT STEP: Stop critical daemon process(es) [IF NEEDED] and copy files"
+read -p "< Press ENTER/RETURN to continue, Ctrl-C to abort >" IGNORED
+
+#
+# 11. [IF REQUIRED] Get the process ID of the master p4d process
+# NB: The master `p4d' process is the one whose parent itself is not `p4d'
+#
+if [ "$UPGRADE_P4D" -a ! "$P4D_PID" ]; then
+	echo "================================================================"
+	echo -n ">>> Scanning for p4d process ID... "
+	P4D_PID=$( ps axo pid,ppid,ucomm | awk '
+	(ucomm = $3) == "p4d" { pid = $1; ppid = $2
+		(cmd = sprintf("ps -p %u -o ucomm=", ppid)) | getline pucomm
+		close(cmd)
+		if (pucomm != ucomm) {
+			print pid
+			exit
+		}
+	}' )
+	if [ ! "$P4D_PID" ]; then
+		echo "Not found!"
+		FORCE_P4D_START=1
+		echo
+		echo "NB: Enter 'no' below if you have must do an offline"
+		echo "    replay of the last checkpoint before starting"
+		echo "    the newest version."
+		echo
+		read -p "Start p4d now? [Y]: " ANSWER
+		case "$ANSWER" in
+		[Nn]|[Nn][Oo]) FORCE_P4D_START= ;;
+		esac
+		unset ANSWER
+	else
+		echo "$P4D_PID"
+	fi
+fi
+
+#
+# 12. [IF REQUIRED] Get listening `host:port' for running p4d process
+# NB: Only reached if (a) no upgrade of p4d required or (b) we were able to
+#     obtain the process ID of the running p4d process (P4D_PID).
+#
+if [ "$UPGRADE_P4D" -a "$P4D_PID" -a ! "$P4PORT" ]; then
+	echo -n ">>> Finding listen-address:port for p4d pid $P4D_PID... "
+	P4PORT=` case "$UNAME_s" in
+		FreeBSD) sockstat -Ll4 | awk -v pid="$P4D_PID" \
+			'$3 == pid && $NF == "*:*" { print $(NF-1); exit }'
+			;;
+		Linux) lsof -nPi4 | awk -v pid="$P4D_PID" \
+			'$2 == pid && $NF == "(LISTEN)" { print $(NF-1); exit}'
+			;;
+	esac`
+	echo "${P4PORT:-Not found!}"
+	if [ ! "$P4PORT" ]; then
+		echo "Unable to communicate with running p4d process." >&2
+		echo "Exiting." >&2
+		exit 1
+	fi
+fi
+
+#
+# 13. [IF REQUIRED] Shut down the process(es), in an official way
+# NB: Only reached if (a) no upgrade of p4d required or (b) we were able to
+#     obtain both the listen-addr:port of the running p4d process (P4PORT) and
+#     a P4USER that can perform `p4 admin' commands (e.g., `p4 admin stop').
+#
+if [ "$UPGRADE_P4D" -a "$P4D_PID" -a "$P4PORT" ]; then
+	echo ">>> Stopping p4d process ($P4D_PID)..."
+	if [ ! "$P4USER" ]; then
+		read -p "Please enter p4 admin user name: [$SUDO_USER] " P4USER
+		[ "${P4USER:=$SUDO_USER}" ] ||
+			{ echo "Nothing entered. Exiting." >&2; exit 1; }
+	fi
+	p4 -p "$P4PORT" -u "$P4USER" admin stop || {
+		result=$?
+		echo "Command: p4 -p \"$P4PORT\" -u \"$P4USER\" admin stop" >&2
+		echo "Exited with error status ($result)." >&2
+		# Command exited with error status. Back away slowly!
+		# Ensure service wasn't interrupted (else start it back up).
+		sleep 1
+		ps -p "$P4D_PID" > /dev/null 2>&1 ||
+			nc -z "${P4PORT%:*}" "${P4PORT#*:}" > /dev/null 2>&1 ||
+			ps axo ucomm | awk '
+				$1 == "p4d" {found++;exit} END {exit !found}
+			' || {
+				echo "p4d stopped! Restarting p4d." >&2
+				service perforce start
+			}
+		echo "Exiting." >&2
+		exit 1
+	}
+fi
+if [ "$UPGRADE_P4WEB" ]; then
+	echo ">>> Stopping p4web process(es)..."
+	killall p4web
+fi
+
+#
+# 14. [IF REQUIRED] Wait for the master process to go away
+#
+if [ "$UPGRADE_P4D" -a "$P4D_PID" ]; then
+	echo ">>> Waiting for master p4d process ($P4D_PID) to go down..."
+	while ps -p "$P4D_PID" > /dev/null 2>&1; do
+		sleep 1
+	done
+fi
+if [ "$UPGRADE_P4D" -a "$P4PORT" ]; then
+	echo ">>> Waiting for $P4PORT to stop listening..."
+	while nc -zv "${P4PORT%:*}" "${P4PORT#*:}" > /dev/null 2>&1; do
+		sleep 1
+	done
+fi
+
+#
+# 15. Suggest the user perform a checkpoint
+#
+if [ "$UPGRADE_P4D" ]; then
+	echo
+	echo "NEXT STEP: Perform verification and then checkpoint (for replay)"
+	echo "================================================================"
+	echo "Now is the time you should make an offline checkpoint:"
+	echo
+	echo "sudo -u perforce $P4D -r /perforce -J /perforce/journal -jc -z"
+	echo
+	echo "If you have already done this, press Enter."
+	echo "Otherwise, press Ctrl-C to abort and do it now."
+fi
+echo
+echo "NEXT STEP: Move new [downloaded] version(s) into place"
+echo "FINAL STEP: Start new version of daemon(s) [IF NEEDED]"
+read -p "< Press ENTER/RETURN to continue, Ctrl-C to abort >" IGNORED
+
+#
+# 16. Move latest versions into place (with proper permissions)
+#
+echo "================================================================"
+echo ">>> Moving new version(s) into place"
+for var in $NEED_UPGRADE; do
+	eval util=\"\$$var\"
+	mv -vf "${DOWNLOAD_TMP%/}/${util##*/}" "$util"
+done
+echo
+echo "FINAL STEP: Start new version of daemon(s) [IF NEEDED]"
+
+#
+# 17. Start up the new versions...
+#
+echo "================================================================"
+echo "[OPTIONAL] POST-UPGRADE STEP: Replay the last checkpoint if-needed:"
+echo
+echo "sudo -u perforce /usr/local/bin/p4d -r /perforce -z -jr checkpoint.#.gz"
+echo "sudo -u perforce /usr/local/bin/p4d -r /perforce -jr /perforce/journal"
+echo "sudo -u perforce /usr/local/bin/p4d -r /perforce -J /perforce/journal -xu"
+echo
+echo "When this is complete, press ENTER to start the new version(s)"
+echo
+read -p "< Press ENTER/RETURN to continue, Ctrl-C to abort >" IGNORED
+echo "================================================================"
+echo ">>> Starting new version(s)"
+[ "$UPGRADE_P4D" ] && [ "$P4D_PID" -o "$FORCE_P4D_START" ] &&
+	service p4d start && echo "p4d started."
+[ "$UPGRADE_P4WEB" ] &&
+	service p4web start && echo "p4web started."
+echo
+
+#
+# Done
+#
+echo "================================================================"
+echo "Done. (Success)"
+echo
+echo "[OPTIONAL] Recommended to now perform the following:"
+echo
+echo "time p4 -p $P4PORT verify //..."
+
+################################################################################
+#END
+################################################################################
+#
+# $Copyright: 2015 Devin Teske. All rights reserved. $
+#
+# $FrauBSD: p4t/libexec/upgrade 2015-10-20 23:32:05 -0700 freebsdfrau $
+#
+################################################################################

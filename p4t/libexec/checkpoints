@@ -1,0 +1,73 @@
+#!/bin/sh
+############################################################ IDENT(1)
+#
+# $Title: Script to list perforce checkpoints (simple) $
+#
+############################################################ GLOBALS
+
+pgm="${0##*/}" # Program basename
+
+#
+# Global exit status
+#
+SUCCESS=0
+FAILURE=1
+
+#
+# Command-line options
+#
+ROOTDIR=	# -R dir
+SHOW_U=		# -u
+SHOW_Z=		# -z
+
+#
+# Miscellaneous
+# NB: For usage() statement only (not exported)
+#
+P4D_ROOT=$( sysrc -n p4d_root 2> /dev/null )
+: ${P4D_ROOT:=/perforce}
+
+############################################################ FUNCTIONS
+
+usage()
+{
+	exec >&2
+	local optfmt="\t%-8s %s\n"
+	printf "Usage: %s [-u|-z] [-R dir]\n" "$pgm"
+	printf "OPTIONS:\n"
+	printf "$optfmt" "-R dir" "List dir checkpoints (default $P4D_ROOT)."
+	printf "$optfmt" "-u" "Show only uncompressed checkpoints."
+	printf "$optfmt" "-z" "Show only compressed checkpoints (*.gz)."
+	exit $FAILURE
+}
+
+############################################################ MAIN
+
+#
+# Command-line options
+#
+while getopts R:uz flag; do
+	case "$flag" in
+	R) ROOTDIR="$OPTARG" ;;
+	u) SHOW_U=1 SHOW_Z= ;;
+	z) SHOW_Z=1 SHOW_U= ;;
+	*) usage
+	esac
+done
+shift $(( $OPTIND - 1 ))
+[ $# -eq 0 ] || usage
+
+#
+# Hand-off execution
+#
+exec p4t list_checkpoint -a${SHOW_U:+u}${SHOW_Z:+z} ${ROOTDIR:+-R "$ROOTDIR"}
+
+################################################################################
+# END
+################################################################################
+#
+# $Copyright: 2015 Devin Teske. All rights reserved. $
+#
+# $FrauBSD: p4t/libexec/checkpoints 2015-10-20 23:32:05 -0700 freebsdfrau $
+#
+################################################################################
