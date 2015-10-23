@@ -16,6 +16,7 @@ FAILURE=1
 #
 # Command-line options
 #
+NOHEADER=	# -H
 ONELINE=	# -1
 PAST365=	# -Y
 REVERSE=	# -r
@@ -44,17 +45,14 @@ usage()
 	local optfmt="\t%-9s %s\n"
 	printf "Usage: %s [OPTIONS] [user ...]\n" "$pgm"
 	printf "OPTIONS:\n"
-	printf "$optfmt" "-1" \
-		"Output data as a single-line for each user/year."
-	printf "$optfmt" "-r" \
-		"List years in reverse order (oldest first)."
-	printf "$optfmt" "-v" \
-		"Verbose. Show years where user made zero commits."
+	printf "$optfmt" -1 "Output data as a single-line for each user/year."
+	printf "$optfmt" -H "Don't print a header when \`-Y' is given."
+	printf "$optfmt" -r "List years in reverse order (oldest first)."
+	printf "$optfmt" -v "Verbose. Show years where user made zero commits."
 	printf "$optfmt" "-y year" \
 		"Specify years to list stats for (default all years)."
 	printf "$optfmt" "" "This option can be specified multiple times."
-	printf "$optfmt" "-Y" \
-		"Report number of commits made in past 365 days."
+	printf "$optfmt" -Y "Report number of commits made in past 365 days."
 	printf "$optfmt" "" "Mutually exclusive to \`-y year'."
 	exit $FAILURE
 }
@@ -130,9 +128,10 @@ type tac > /dev/null 2>&1 || tac(){ tail -r "$@"; }
 #
 # Command-line options
 #
-while getopts 1rvy:Y flag; do
+while getopts 1Hrvy:Y flag; do
 	case "$flag" in
 	1) ONELINE=1 ;;
+	H) NOHEADER=1 ;;
 	r) REVERSE=1 ;;
 	v) VERBOSE=1 ;;
 	y) [ "$PAST365" ] && usage "cannot specify both \`-y year' and \`-Y'"
@@ -169,7 +168,7 @@ done
 #
 # Report commits by-year for each user argument
 #
-[ "$PAST365" ] &&
+[ "$PAST365" -a ! "$NOHEADER" ] &&
 	echo "+++ Per-user statistics for: p4 changes $RANGE365" >&2
 [ $# -gt 0 ] || set -- $( p4 users | awk '$0=$1' | sort )
 for user in "$@"; do
@@ -208,6 +207,6 @@ exit $SUCCESS
 #
 # $Copyright: 2015 Devin Teske. All rights reserved. $
 #
-# $FrauBSD: p4t/libexec/year 2015-10-23 01:49:43 -0700 freebsdfrau $
+# $FrauBSD: p4t/libexec/year 2015-10-23 12:33:42 -0700 freebsdfrau $
 #
 ################################################################################
