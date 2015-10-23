@@ -1,0 +1,213 @@
+#!/bin/sh
+############################################################ IDENT(1)
+#
+# $Title: Script to count perforce user commits by-year $
+#
+############################################################ GLOBALS
+
+pgm="${0##*/}" # Program basename
+
+#
+# Global exit status
+#
+SUCCESS=0
+FAILURE=1
+
+#
+# Command-line options
+#
+ONELINE=	# -1
+PAST365=	# -Y
+REVERSE=	# -r
+VERBOSE=	# -v
+YEARS=		# -y years
+
+#
+# Miscellaneous
+#
+NEWESTYEAR=
+OLDESTYEAR=
+USER_YEARS=
+THIS_YEAR=$( date +%Y )
+RANGE365=$( date +"@%m/%d/$(( $THIS_YEAR - 1 )),@now" )
+
+############################################################ FUNCTIONS
+
+usage()
+{
+	local fmt="$1"
+	exec >&2
+	if [ "$fmt" ]; then
+		shift 1 # fmt
+		printf "$pgm: $fmt\n" "$@"
+	fi
+	local optfmt="\t%-9s %s\n"
+	printf "Usage: %s [OPTIONS] [user ...]\n" "$pgm"
+	printf "OPTIONS:\n"
+	printf "$optfmt" "-1" \
+		"Output data as a single-line for each user/year."
+	printf "$optfmt" "-r" \
+		"List years in reverse order (oldest first)."
+	printf "$optfmt" "-v" \
+		"Verbose. Show years where user made zero commits."
+	printf "$optfmt" "-y year" \
+		"Specify years to list stats for (default all years)."
+	printf "$optfmt" "" "This option can be specified multiple times."
+	printf "$optfmt" "-Y" \
+		"Report number of commits made in past 365 days."
+	printf "$optfmt" "" "Mutually exclusive to \`-y year'."
+	exit $FAILURE
+}
+
+get_user_years()
+{
+	local user="$1" user_newest user_oldest date year
+
+	USER_YEARS=
+	NEWESTYEAR=
+	OLDESTYEAR=
+
+	# Base years off of actual user commit range
+	user_newest=$( p4 changes -u "$user" | awk 'NR==1' )
+	user_oldest=$( p4 changes -u "$user" | awk 'END{print}' )
+	if [ ! "$user_newest" ]; then
+		# No changes by user
+		if [ "$VERBOSE" ]; then
+			NEWESTYEAR=$THIS_YEAR
+			OLDESTYEAR=$THIS_YEAR
+			USER_YEARS=$THIS_YEAR
+		fi
+	elif [ "$user_newest" = "$user_oldest" ]; then
+		# User has made exactly one change
+		date="${user_newest#* on }"
+		NEWESTYEAR="${date%%/*}"
+		OLDESTYEAR=$NEWESTYEAR
+		USER_YEARS=$NEWESTYEAR
+	else
+		# User has made multiple changes
+		if [ "$VERBOSE" ]; then
+			date="${user_newest#* on }"
+			NEWESTYEAR="${date%%/*}"
+			date="${user_oldest#* on }"
+			OLDESTYEAR="${date%%/*}"
+			if [ "$REVERSE" ]; then
+				USER_YEARS=$( seq $OLDESTYEAR 1 $NEWESTYEAR )
+			else
+				USER_YEARS=$( seq $NEWESTYEAR -1 $OLDESTYEAR )
+			fi
+		else
+			if [ "$REVERSE" ]; then
+				USER_YEARS=$( p4 changes -u "$user" |
+					awk '$0=substr($4,1,4)' | sort -un )
+				OLDESTYEAR=$( echo $USER_YEARS | head -1 )
+				NEWESTYEAR=$( echo $USER_YEARS | tail -1 )
+			else
+				USER_YEARS=$( p4 changes -u "$user" |
+					awk '$0=substr($4,1,4)' | sort -unr )
+				NEWESTYEAR=$( echo $USER_YEARS | head -1 )
+				OLDESTYEAR=$( echo $USER_YEARS | tail -1 )
+			fi
+		fi
+	fi
+	if [ "$VERBOSE" ]; then
+		year=$NEWESTYEAR
+		while [ $year -lt $THIS_YEAR ]; do
+			year=$(( $year + 1 ))
+			if [ "$REVERSE" ]; then
+				USER_YEARS="$USER_YEARS $year"
+			else
+				USER_YEARS="$year $USER_YEARS"
+			fi
+		done
+	fi
+	[ "$USER_YEARS" ] # return status
+}
+
+type tac > /dev/null 2>&1 || tac(){ tail -r "$@"; }
+
+############################################################ MAIN
+
+#
+# Command-line options
+#
+while getopts 1rvy:Y flag; do
+	case "$flag" in
+	1) ONELINE=1 ;;
+	r) REVERSE=1 ;;
+	v) VERBOSE=1 ;;
+	y) [ "$PAST365" ] && usage "cannot specify both \`-y year' and \`-Y'"
+	   [ "$OPTARG" = "${OPTARG%[!0-9]*}" -a ${#OPTARG} -eq 4 ] ||
+	   	usage "invalid \`-y' argument -- %s" "$OPTARG"
+	   YEARS="$YEARS $OPTARG" ;;
+	Y) [ "$YEARS" ] && usage "cannot specify both \`-y year' and \`-Y'"
+	   PAST365=1 ;;
+	*) usage
+	esac
+done
+shift $(( $OPTIND - 1 ))
+
+#
+# Validate command-line arguments
+#
+for user in "$@"; do
+	case "$user" in
+	    "") usage "invalid (NULL) user argument" ;;
+	*[#@]*) usage "Revision chars (@, #) not allowed in '%s'." "$user" ;;
+	 *[*]*) usage "Wildcard (*) not allowed in user '%s'." "$user" ;;
+	*[^\ !\"#$%\&\'\(\)+,./0-9:\;\<=\>?A-Z\[\\\]^_\`a-z{\|}~-]*)
+		usage "Non-printable characters not allowed in '%s'." "$pgm" ;;
+	esac
+done
+
+#
+# Reverse `-y year' arguments if `-r' is given
+#
+[ "$REVERSE" -a "$YEARS" ] && YEARS=$( echo $YEARS | xargs -n1 | tac )
+
+# NOTREACHED unless all users and all years are valid
+
+#
+# Report commits by-year for each user argument
+#
+[ "$PAST365" ] &&
+	echo "+++ Per-user statistics for: p4 changes $RANGE365" >&2
+[ $# -gt 0 ] || set -- $( p4 users | awk '$0=$1' | sort )
+for user in "$@"; do
+	USER_YEARS="$YEARS"
+	[ "$PAST365" -o "$USER_YEARS" ] || get_user_years "$user" || continue
+	[ "$ONELINE" ] || print_header=1
+	for year in $USER_YEARS; do
+		# NOTREACHED if `-Y' given
+		ncommits=$( p4 changes -u "$user" @01/01/$year,@12/31/$year |
+			awk 'END{print NR}' )
+		[ $ncommits -gt 0 -o "$VERBOSE" ] || continue
+		if [ "$print_header" ]; then
+			print_header=
+			printf "+++ Commits by %s:\n" "$user"
+		fi
+		if [ "$ONELINE" ]; then
+			printf "%8u y%4u %s\n" $ncommits $year "$user"
+		else
+			printf "\t... in the year %u: %u\n" $year $ncommits
+		fi
+	done
+	if [ "$PAST365" ]; then
+		# NOTREACHED if `-y year' given
+		ncommits=$( p4 changes -u "$user" "$RANGE365" |
+			awk 'END{print NR}' )
+		[ $ncommits -gt 0 -o "$VERBOSE" ] &&
+			printf "%8u %s\n" $ncommits "$user"
+	fi
+done
+
+exit $SUCCESS
+
+################################################################################
+# END
+################################################################################
+#
+# $Copyright: 2015 Devin Teske. All rights reserved. $
+#
+# $FrauBSD: p4t/libexec/year 2015-10-23 01:49:43 -0700 freebsdfrau $
+#
+################################################################################
