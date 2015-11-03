@@ -24,7 +24,7 @@
 # OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
 # SUCH DAMAGE.
 #
-# $FrauBSD: unfurl/unfurl 2015-11-03 14:16:32 -0800 freebsdfrau $
+# $FrauBSD: unfurl/unfurl 2015-11-03 14:20:18 -0800 freebsdfrau $
 # $FreeBSD$
 #
 ############################################################ IDENT(1)
@@ -42,7 +42,7 @@ export pgm
 #
 # Program version
 #
-VERSION="1.1"
+UNFURL_VERSION="1.1 Nov-3,2015"
 
 #
 # Global exit status
@@ -74,15 +74,6 @@ ZENITY_FONT="DejaVu Sans Mono"
 export HUMAN_DELAY
 
 ############################################################ FUNCTIONS
-
-version()
-{
-	local author='$Author: dteske $' date='$Date: 2015/08/26 $'
-	author="${author#*: }" date="${date#*: }"
-	author="${author% $}" date="${date% $}"
-	printf "%s %s (%s; %s\n" "$pgm" "$VERSION" "$author" "$date" >&2
-	exit $FAILURE
-}
 
 usage()
 {
@@ -241,7 +232,7 @@ while getopts dDfhns:UvVXZ flag; do
 	s) HUMAN_DELAY="$OPTARG" ;;
 	U) UNLINK=1 ;;
 	v) VERBOSE=$(( $VERBOSE + 1 )) ;;
-	V) version ;; # NOTREACHED
+	V) echo "$UNFURL_VERSION"; exit 1 ;;
 	X) USE_XDIALOG=1 ;;
 	Z) USE_ZENITY=1 ;;
 	*) usage # NOTREACHED
