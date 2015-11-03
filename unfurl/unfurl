@@ -535,6 +535,6 @@ eval dpv $dpv_mode -p\"$DPV_PREFIX\" -a\"$DPV_APPEND\" \
 #
 # $Copyright: 2015 Devin Teske. All rights reserved. $
 #
-# $Header$
+# $FrauBSD: unfurl/unfurl 2015-11-03 13:54:13 -0800 freebsdfrau $
 #
 ################################################################################
