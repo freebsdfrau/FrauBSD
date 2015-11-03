@@ -14,7 +14,7 @@ export pgm
 #
 # Program version
 #
-VERSION="1.0"
+VERSION="1.1"
 
 #
 # Global exit status
@@ -526,7 +526,7 @@ fi
 # NOTREACHED unless DEBUG <= 0
 
 eval dpv $dpv_mode -p\"$DPV_PREFIX\" -a\"$DPV_APPEND\" \
-	-x\"\$SH_DECODER_CMD\" -- $DPV_ARG_LIST \
+	-t \"\$pgm\" -x\"\$SH_DECODER_CMD\" -- $DPV_ARG_LIST \
 	${USE_ZENITY:+2> /dev/null | zdialog_gauge --title \"\$pgm\"}
 
 ################################################################################
@@ -535,6 +535,6 @@ eval dpv $dpv_mode -p\"$DPV_PREFIX\" -a\"$DPV_APPEND\" \
 #
 # $Copyright: 2015 Devin Teske. All rights reserved. $
 #
-# $FrauBSD: unfurl/unfurl 2015-11-03 13:54:13 -0800 freebsdfrau $
+# $FrauBSD: unfurl/unfurl 2015-11-03 13:57:03 -0800 freebsdfrau $
 #
 ################################################################################
