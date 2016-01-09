@@ -84,8 +84,7 @@ for file in "$@"; do
 	# Only operate on files we know to be safe
 	#
 	case "$( file -b "$file" 2> /dev/null )" in
-		"ASCII text") : fall through ;;
-		*"shell script"*) : fall through ;;
+		*"ASCII text"*) : fall through ;;
 		*)
 			DEBUG "$gitfile (skipped)"
 			continue
@@ -177,6 +176,6 @@ done
 #
 # $Copyright: 2015 The FrauBSD Project. All rights reserved. $
 #
-# $FrauBSD: .filters/fraubsd-keywords 2015-10-20 22:43:04 -0700 freebsdfrau $
+# $FrauBSD: .filters/fraubsd-keywords 2016-01-09 13:07:27 -0800 freebsdfrau $
 #
 ################################################################################
