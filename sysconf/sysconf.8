@@ -1,0 +1,247 @@
+.\" Copyright (c) 2013-2016 Devin Teske
+.\" All rights reserved.
+.\"
+.\" Redistribution and use in source and binary forms, with or without
+.\" modification, are permitted provided that the following conditions
+.\" are met:
+.\" 1. Redistributions of source code must retain the above copyright
+.\"    notice, this list of conditions and the following disclaimer.
+.\" 2. Redistributions in binary form must reproduce the above copyright
+.\"    notice, this list of conditions and the following disclaimer in the
+.\"    documentation and/or other materials provided with the distribution.
+.\"
+.\" THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS ``AS IS'' AND
+.\" ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+.\" IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+.\" ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+.\" FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+.\" DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+.\" OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+.\" HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+.\" LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+.\" OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+.\" SUCH DAMAGE.
+.\"
+.\" $FrauBSD: sysconf/sysconf.8 2016-01-09 13:08:21 -0800 freebsdfrau $
+.\" $FreeBSD$
+.\"
+.Dd Nov 14, 2013
+.Dt SYSCONF 8
+.Os
+.Sh NAME
+.Nm sysconf
+.Nd safely edit system configuration files
+.Sh SYNOPSIS
+.Nm
+.Op Fl cDeFhinNqvx
+.Op Fl f Ar file
+.Op Fl R Ar dir
+.Ar name Ns Op = Ns Ar value
+.Ar ...
+.Nm
+.Op Fl cDeFhinNqvx
+.Op Fl f Ar file
+.Op Fl R Ar dir
+.Fl a | A
+.Sh DESCRIPTION
+The
+.Nm
+utility retrieves
+.Xr loader.conf 5
+and
+.Xr sysctl.conf 5
+variables from the collection of system configuration files annd
+allows processes with appropriate privilege to change values in
+a safe and effictive manner.
+.Pp
+The following options are available:
+.Bl -tag -width indent+
+.It Fl a
+Dump a list of all non-default configuration variables.
+.It Fl A
+Dump a list of all configuration variables
+.Pq incl. defaults .
+.It Fl c
+Check if the value will change when assigning a new value.
+If verbose
+.Pq see Dq Fl v
+prints a message stating whether a change would occur.
+Exits with success if no change is necessary, else returns error status.
+.It Fl D
+Show default value(s) only (this is the same as setting SYS_CONFS to NULL or
+passing `-f' with a NULL file-argument).
+.It Fl e
+Separate the name and the value of the variable(s) with
+.Ql Li = .
+This is useful for producing output which can be fed back to
+.Xr sysctl 8 .
+Ignored if
+.Ql Fl n ,
+.Ql Fl N ,
+or
+.Ql Fl F
+is specified.
+.It Fl f Ar file
+Operate on the specified file(s) instead of the files obtained by reading the
+.Sq loader_conf_files
+entry in the
+.Ev LOADER_DEFAULTS
+file.
+This option can be specified multiple times for additional files.
+.It Fl F
+Show only the last system configuration file each directive is in.
+Either
+.Xr loader.conf 5
+or
+.Xr sysctl.conf 5
+file.
+.It Fl h
+Print a short usage message to stderr and exit.
+.It Fl -help
+Print a full usage statement to stderr and exit.
+.It Fl i
+Ignore unknown variables.
+.It Fl n
+Show only variable values, not their names.
+.It Fl N
+Show only variable names, not their values.
+.It Fl q
+Quiet.
+Reverse previous occurrences of
+.Fl v
+flag.
+.It Fl R Ar dir
+Operate within the root directory
+.Pq Sq Ar dir
+rather than
+.Pq Sq / .
+.It Fl v
+Verbose.
+Print the pathname of the specific
+.Xr rc.conf 5
+file where the directive was found.
+.It Fl -version
+Print version information to stdout and exit.
+.It Fl x
+Remove variable(s) from specified file(s).
+.El
+.Pp
+This utility works similar to
+.Xr sysctl 8 .
+It shares the `-e' and `-n' options
+.Pq detailed above
+and also has the same
+.Ql name[=value]
+syntax for querying/setting configuration options.
+.Pp
+However, while
+.Xr sysctl 8
+serves to query/modify MIBs in the entrant kernel,
+.Nm
+instead works on values in the system configuration files,
+.Xr loader.conf 5
+and
+.Xr sysctl.conf 5 .
+.Pp
+The list of system configuration files for loader variables
+.Pq CTLFLAG_TUN
+is configured in the file
+.Ql /boot/defaults/loader.conf
+within the variable
+.Ql loader_conf_files ,
+which by-default contains a space-separated list of pathnames.
+On all FreeBSD
+systems, this defaults to "/boot/loader.conf /boot/loader.conf.local".
+For runtime tunable sysctls, the list of system configuration files is
+.Ql /etc/sysctl.conf
+and
+.Ql /etc/sysctl.conf.local .
+.Pp
+When supplied a variable name,
+.Nm
+will return the value of the variable.
+If the variable does not appear in any
+of the configured
+.Ql loader_conf_files
+or
+sysctl runtime tunable configuration files,
+an error is printed and error status is returned.
+.Pp
+When changing values of a given variable,
+it does not matter if the variable appears in the system configuration files.
+If the variable does not appear in any of the files, it is appended to either
+the first pathname in
+.Ql loader_conf_files
+.Pq loader tunables
+or
+.Ql /etc/sysctl.conf .
+Otherwise,
+.Nm
+will replace only the last-occurrence in the last-file found to contain the
+variable.
+This gets the value to take effect next boot without heavily
+modifying these integral files
+.Po
+yet taking care to avoid file growth should
+.Nm
+be called repeatedly
+.Pc .
+.Sh ENVIRONMENT
+The following environment variables are referenced by
+.Nm :
+.Bl -tag -width ".Ev LOADER_DEFAULTS"
+.It Ev SYS_CONFS
+Override default
+.Ql loader_conf_files
+.Pq even if NULL .
+.It Ev LOADER_DEFAULTS
+Location of
+.Ql /boot/defaults/loader.conf
+file.
+.El
+.Sh FILES
+.Bl -tag -width ".Pa /etc/defaults/rc.conf" -compact
+.It Pa /boot/defaults/loader.conf
+.It Pa /boot/loader.conf
+.It Pa /etc/sysctl.conf
+.It Pa /etc/sysctl.conf.local
+.El
+.Sh EXAMPLES
+Below are some simple examples of how
+.Nm
+can be used to query certain values from either
+.Xr loader.conf 5
+or
+.Xr sysctl.conf 5
+collection of system configuration files:
+.Pp
+.Nm
+kernel
+.Dl returns the value of kernel, usually /boot/kernel/kernel.
+.Pp
+.Nm
+net.inet.ip.forwarding
+.Dl returns 1 if IP forwarding between interfaces is enabled, otherwise 0.
+.Pp
+Working on other files, such as
+.Xr crontab 5 :
+.Pp
+.Nm
+-f /etc/crontab MAILTO
+.Dl returns the value of the MAILTO setting Pq if configured .
+.Pp
+.Sh SEE ALSO
+.Xr jail 8 ,
+.Xr jexec 8 ,
+.Xr jls 1 ,
+.Xr loader 8 ,
+.Xr loader.conf 5 ,
+.Xr sysctl 8 ,
+.Xr sysctl.conf 5
+.\" .Sh HISTORY
+.\" A
+.\" .Nm
+.\" utility first appeared in
+.\" .Fx 10.1 .
+.Sh AUTHORS
+.An Devin Teske Aq dteske@FreeBSD.org
