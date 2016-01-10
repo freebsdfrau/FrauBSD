@@ -1,4 +1,4 @@
-# $FrauBSD: README 2016-01-09 12:56:06 -0800 freebsdfrau $
+# $FrauBSD: README 2016-01-09 16:44:36 -0800 freebsdfrau $
 
 Welcome to the FrauBSD Project!
 
@@ -7,6 +7,7 @@ Welcome to the FrauBSD Project!
 The following is required before using `git commit' in this project.
 
    $ git config user.name USERNAME
+   $ git config user.name USERNAME@fraubsd.org
    $ ls .hooks/ | xargs -rn1 -Ifile ln -sfv ../../.hooks/file .git/hooks/file
 
 Which will ensure the FrauBSD keyword is expanded/updated for each commit.
