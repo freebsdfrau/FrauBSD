@@ -84,7 +84,7 @@ for file in "$@"; do
 	# Only operate on files we know to be safe
 	#
 	case "$( file -b "$file" 2> /dev/null )" in
-		*"ASCII text"*) : fall through ;;
+		*ASCII*text*) : fall through ;;
 		*)
 			DEBUG "$gitfile (skipped)"
 			continue
