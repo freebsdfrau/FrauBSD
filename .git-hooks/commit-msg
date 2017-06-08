@@ -22,12 +22,12 @@ DEBUG "Commit aborted!"
 # Commit aborted: Unset keywords in modified text-files
 DEBUG "Keyword modifications..."
 git diff --cached --name-only -z --diff-filter=ACM |
-	xargs -r0 .git-filters/keywords -d --
+	xargs -0 .git-filters/keywords -d --
 DEBUG "End List"
 
 # Update the staging files
 git diff --cached --name-only -z --diff-filter=ACM |
-	xargs -r0 git add -u -v --
+	xargs -0 git add -u -v --
 
 ################################################################################
 # END

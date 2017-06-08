@@ -14,7 +14,7 @@ DEBUG "$0 $*"
 
 # Do a simple `ls -l' of recently committed files
 DEBUG "Listing committed files..."
-git show --name-only -z --format= | xargs -r0 ls -l --
+git show --name-only -z --format= | xargs -0 ls -l --
 DEBUG "End List"
 
 ################################################################################
