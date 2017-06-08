@@ -123,7 +123,7 @@ for file in "$@"; do
 			print_file_debug=
 			printf "DEBUG: %s " "$gitfile"
 		fi
-		awk '/\$'$keyword'(: [^$]+)?\$/ { exit found++ }
+		awk '/\$'$keyword'(: [^$]*)?\$/ { exit found++ }
 			END { exit !found }' "$file" || continue
 		needs_editing=1
 		[ "$DEBUG" ] && echo "(edit)"
