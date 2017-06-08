@@ -21,7 +21,13 @@ KEYWORDS="
 # Pre-expanded keyword values
 # NB: $file is actual filename while $gitfile uses escape-sequences
 #
+_Author='$NAME'
+_Branch='$BRANCH'
+_Date='$DATE'
 _FrauBSD='$gitfile $DATE $NAME'
+_Header='$gitfile $DATE $NAME'
+_RCSfile='${gitfile##*/}'
+_Source='$gitfile'
 
 ############################################################ GLOBALS
 
