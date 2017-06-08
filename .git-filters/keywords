@@ -121,7 +121,7 @@ for file in "$@"; do
 	for keyword in $KEYWORDS; do
 		if [ "$print_file_debug" ]; then
 			print_file_debug=
-			echo -n "DEBUG: $gitfile "
+			printf "DEBUG: %s " "$gitfile"
 		fi
 		awk '/\$'$keyword'(: [^$]+)?\$/ { exit found++ }
 			END { exit !found }' "$file" || continue
@@ -166,7 +166,7 @@ for file in "$@"; do
 				fi
 			fi
 		done
-		echo "$LINE"
+		printf "%s\n" "$LINE"
 	done < "$TMPFILE" 3>&1 > "$file"
 done
 
