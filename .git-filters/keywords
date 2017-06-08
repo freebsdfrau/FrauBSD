@@ -141,8 +141,8 @@ for file in "$@"; do
 	[ "$DELETE" ] && status=U-
 	cp -f "$file" "$TMPFILE" || exit
 	while IFS= read -r LINE; do
-		line_modified=
 		for keyword in $KEYWORDS; do
+			line_modified=
 			eval value=\"\$$keyword\"
 			case "$LINE" in
 			*"\$$keyword: "*'$'*)
