@@ -46,7 +46,7 @@ TMPFILE="/tmp/${0##*/}.$$"
 DEBUG()
 {
 	local fmt="$1"
-	[ ! "$DEBUG"] && return
+	[ ! "$DEBUG" ] && return
 	[ ! "$fmt" ] && return
 	shift 1 # fmt
 	printf "DEBUG: $fmt\n" "$@"
