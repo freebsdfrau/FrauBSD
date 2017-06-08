@@ -109,7 +109,7 @@ for file in "$@"; do
 	else
 		for keyword in $KEYWORDS; do
 			eval value=\"\$_$keyword\"
-			eval $keyword="\"\\\$$keyword: $value \\\$\""
+			eval $keyword=\"\\\$$keyword:\ $value\ \\\$\"
 		done
 	fi
 
