@@ -26,6 +26,8 @@ _Branch='$BRANCH'
 _Date='$DATE'
 _FrauBSD='$gitfile $DATE $NAME'
 _Header='$gitfile $DATE $NAME'
+_Origin='$ORIGIN'
+_Project='${ORIGIN##*:}'
 _RCSfile='${gitfile##*/}'
 _Source='$gitfile'
 
@@ -69,6 +71,11 @@ while getopts d flag; do
 	esac
 done
 shift $(( $OPTIND - 1 ))
+
+#
+# Get origin URL
+#
+ORIGIN=$( git config remote.origin.url )
 
 #
 # Get current branch name (required by `-d' to delete keywords)
