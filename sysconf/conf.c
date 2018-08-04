@@ -46,7 +46,7 @@ __FBSDID("$FreeBSD$");
 static SLIST_HEAD(slisthead, option) head = SLIST_HEAD_INITIALIZER(head);
 
 /* Function prototypes for private functions (see style(9)) */
-int setoid(struct fp_config *option, uint32_t line, char *directive,
+int setoid(struct figpar_config *option, uint32_t line, char *directive,
 	char *value);
 int sysconf_sanitize_value(char **value);
 
@@ -96,7 +96,7 @@ sysconf_sanitize_value(char **value)
  * figpar call-back for variables
  */
 int
-setoid(struct fp_config *option __unused, uint32_t line, char *directive,
+setoid(struct figpar_config *option __unused, uint32_t line, char *directive,
     char *value)
 {
 	struct option *opt, *opt_new;
@@ -154,9 +154,9 @@ parse_sysconf_all(void)
 		snprintf(path, PATH_MAX, "%s", LOADER_DEFAULTS);
 
 	/* Set figpar processing options */
-	processing_options |= FP_REQUIRE_EQUALS;
-	processing_options |= FP_BREAK_ON_EQUALS;
-	processing_options |= FP_CASE_SENSITIVE;
+	processing_options |= FIGPAR_REQUIRE_EQUALS;
+	processing_options |= FIGPAR_BREAK_ON_EQUALS;
+	processing_options |= FIGPAR_CASE_SENSITIVE;
 
 	/*
 	 * Process first file (either $LOADER_DEFAULTS if set, or
